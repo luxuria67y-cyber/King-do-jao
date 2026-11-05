@@ -1,6 +1,7 @@
 -- ============================================================
 -- MILLIE HUB | LEGACY PIECE | DELTA MOBILE
 -- Tema: Millie (Helluva Boss) | Vermelho Escuro + Amarelo
+-- Correções: Teleporte (sem voltar), Hitbox, Auto Farm, Auto Quest
 -- ============================================================
 
 local Players = game:GetService("Players")
@@ -9,13 +10,17 @@ local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
+local TeleportService = game:GetService("TeleportService")
 local LocalPlayer = Players.LocalPlayer
 local Mouse = LocalPlayer:GetMouse()
 
 -- ==================== PROTEÇÃO ANTI-BAN ====================
 local function protect()
     if syn and syn.protect_gui then
-        local old; old = hookfunction(game.HttpGet, function(self, url, ...)
+        syn.protect_gui(game:GetService("CoreGui"))
+    end
+    if hookfunction then
+        local old = hookfunction(game.HttpGet, function(self, url, ...)
             if string.find(url, "legacypiece") or string.find(url, "anti") then
                 return ""
             end
@@ -39,6 +44,11 @@ local Config = {
     },
     AutoFarm = false,
     AutoQuest = false,
+    AutoMaterial = false,
+    MaterialSelecionado = "Thief's rag",
+    AutoLevel = false,
+    AutoFlag = false,
+    AutoHop = false,
     HitboxRange = 50,
     TeleportDelay = 0.5,
     AttackDelay = 0.3,
@@ -52,7 +62,7 @@ local function Tween(obj, props, time, style, dir)
     return t
 end
 
-local function CriarBotao(parent, texto, y)
+local function CriarBotao(parent, texto, y, callback)
     local btn = Instance.new("TextButton")
     btn.Size = UDim2.new(0.9, 0, 0, 35)
     btn.Position = UDim2.new(0.05, 0, 0, y)
@@ -76,6 +86,9 @@ local function CriarBotao(parent, texto, y)
     end)
     btn.MouseLeave:Connect(function()
         Tween(btn, {BackgroundColor3 = Config.Tema.Botao}, 0.2)
+    end)
+    btn.MouseButton1Click:Connect(function()
+        if callback then callback() end
     end)
     return btn
 end
@@ -114,11 +127,11 @@ local function BoasVindas()
     label.Parent = frame
 
     Tween(frame, {Size = UDim2.new(0, 300, 0, 80)}, 0.6)
-    wait(0.3)
+    task.wait(0.3)
     Tween(label, {TextTransparency = 0}, 0.5)
-    wait(2)
+    task.wait(2)
     Tween(frame, {Size = UDim2.new(0, 0, 0, 0)}, 0.5)
-    wait(0.5)
+    task.wait(0.5)
     gui:Destroy()
 end
 
@@ -182,27 +195,24 @@ local function VerificarSenha()
         if input.Text == Config.Senha then
             gui:Destroy()
             BoasVindas()
-            wait(3)
-            -- Abre o Hub principal
-            -- (a função CriarHub será chamada aqui)
+            task.wait(3)
             CriarHub()
         else
             input.Text = ""
             input.PlaceholderText = "Senha incorreta!"
         end
     end)
-
     return gui
 end
 
--- ==================== HUB PRINCIPAL ====================
+-- ==================== HUB PRINCIPAL (ABAS) ====================
 function CriarHub()
     local gui = Instance.new("ScreenGui")
     gui.Name = "MillieHub"
     gui.ResetOnSpawn = false
     gui.Parent = game:GetService("CoreGui")
 
-    -- Botão bolha "jv" para minimizar/restaurar
+    -- Botão bolha "jv"
     local bolha = Instance.new("TextButton")
     bolha.Size = UDim2.new(0, 50, 0, 50)
     bolha.Position = UDim2.new(0, 20, 0.5, -25)
@@ -218,7 +228,7 @@ function CriarHub()
 
     -- Frame principal
     local main = Instance.new("Frame")
-    main.Size = UDim2.new(0, 320, 0, 400)
+    main.Size = UDim2.new(0, 500, 0, 400)
     main.Position = UDim2.new(0.5, 0, 0.5, 0)
     main.AnchorPoint = Vector2.new(0.5, 0.5)
     main.BackgroundColor3 = Config.Tema.Fundo
@@ -239,84 +249,129 @@ function CriarHub()
     titulo.Text = "MILLIE HUB"
     titulo.Parent = main
 
-    -- Abas (simplificado: Auto Farm, Teleportes, Player)
-    local tabFrame = Instance.new("Frame")
-    tabFrame.Size = UDim2.new(1, 0, 1, -40)
-    tabFrame.Position = UDim2.new(0, 0, 0, 40)
-    tabFrame.BackgroundTransparency = 1
-    tabFrame.Parent = main
+    -- Barra lateral de abas
+    local tabBar = Instance.new("Frame")
+    tabBar.Size = UDim2.new(0, 120, 1, -40)
+    tabBar.Position = UDim2.new(0, 0, 0, 40)
+    tabBar.BackgroundTransparency = 1
+    tabBar.Parent = main
 
-    -- ===== AUTO FARM =====
-    local autoFarmBtn = CriarBotao(tabFrame, "Ativar Auto Farm", 10)
-    local statusLabel = Instance.new("TextLabel")
-    statusLabel.Size = UDim2.new(0.9, 0, 0, 20)
-    statusLabel.Position = UDim2.new(0.05, 0, 0, 50)
-    statusLabel.BackgroundTransparency = 1
-    statusLabel.TextColor3 = Config.Tema.Texto
-    statusLabel.Font = Enum.Font.Gotham
-    statusLabel.TextSize = 12
-    statusLabel.Text = "Status: OFF"
-    statusLabel.Parent = tabFrame
+    -- Área de conteúdo
+    local contentArea = Instance.new("Frame")
+    contentArea.Size = UDim2.new(1, -120, 1, -40)
+    contentArea.Position = UDim2.new(0, 120, 0, 40)
+    contentArea.BackgroundTransparency = 1
+    contentArea.Parent = main
 
-    autoFarmBtn.MouseButton1Click:Connect(function()
+    -- Função para criar abas
+    local function CriarAba(nome, y)
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(0.9, 0, 0, 30)
+        btn.Position = UDim2.new(0.05, 0, 0, y)
+        btn.BackgroundColor3 = Config.Tema.Botao
+        btn.TextColor3 = Config.Tema.Texto
+        btn.Font = Enum.Font.GothamBold
+        btn.TextSize = 12
+        btn.Text = nome
+        btn.BorderSizePixel = 0
+        btn.Parent = tabBar
+        Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+        Instance.new("UIStroke", btn).Color = Config.Tema.Borda
+        return btn
+    end
+
+    -- Criar abas
+    local abaMain = CriarAba("Main", 0)
+    local abaBosses = CriarAba("Bosses", 35)
+    local abaSea = CriarAba("Sea", 70)
+    local abaDungeon = CriarAba("Dungeon", 105)
+    local abaQuest = CriarAba("Quest", 140)
+    local abaMisc = CriarAba("Misc", 175)
+
+    -- Conteúdo da aba Main
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Size = UDim2.new(1, 0, 1, 0)
+    mainFrame.BackgroundTransparency = 1
+    mainFrame.Parent = contentArea
+
+    -- Botões da aba Main
+    local autoFarmBtn = CriarBotao(mainFrame, "Auto Farm", 10, function()
         Config.AutoFarm = not Config.AutoFarm
-        autoFarmBtn.Text = Config.AutoFarm and "Desativar Auto Farm" or "Ativar Auto Farm"
-        statusLabel.Text = "Status: " .. (Config.AutoFarm and "ON" or "OFF")
+        autoFarmBtn.Text = Config.AutoFarm and "Desativar Auto Farm" or "Auto Farm"
     end)
 
-    -- ===== AUTO QUEST =====
-    local autoQuestBtn = CriarBotao(tabFrame, "Ativar Auto Quest", 80)
-    autoQuestBtn.MouseButton1Click:Connect(function()
+    local autoQuestBtn = CriarBotao(mainFrame, "Auto Quest", 55, function()
         Config.AutoQuest = not Config.AutoQuest
-        autoQuestBtn.Text = Config.AutoQuest and "Desativar Auto Quest" or "Ativar Auto Quest"
+        autoQuestBtn.Text = Config.AutoQuest and "Desativar Auto Quest" or "Auto Quest"
     end)
 
-    -- ===== HITBOX =====
-    local hitboxBtn = CriarBotao(tabFrame, "Aumentar Hitbox (50)", 150)
-    hitboxBtn.MouseButton1Click:Connect(function()
-        for _, v in pairs(Workspace:GetDescendants()) do
-            if v:IsA("BasePart") and v.Parent and v.Parent:FindFirstChild("Humanoid") and v.Parent ~= LocalPlayer.Character then
-                if v.Name == "Hitbox" or v.Name == "Torso" or v.Name == "UpperTorso" then
-                    v.Size = Vector3.new(Config.HitboxRange, Config.HitboxRange, Config.HitboxRange)
-                    v.Transparency = 0.7
-                end
-            end
-        end
+    local autoMaterialBtn = CriarBotao(mainFrame, "Auto Farm Material", 100, function()
+        Config.AutoMaterial = not Config.AutoMaterial
+        autoMaterialBtn.Text = Config.AutoMaterial and "Desativar Auto Material" or "Auto Farm Material"
     end)
 
-    -- ===== TELEPORTE PARA MOBS =====
-    local tpMobBtn = CriarBotao(tabFrame, "Teleportar para Mobs", 220)
-    tpMobBtn.MouseButton1Click:Connect(function()
+    local autoLevelBtn = CriarBotao(mainFrame, "Auto Farm Level", 145, function()
+        Config.AutoLevel = not Config.AutoLevel
+        autoLevelBtn.Text = Config.AutoLevel and "Desativar Auto Level" or "Auto Farm Level"
+    end)
+
+    local autoFlagBtn = CriarBotao(mainFrame, "Auto Collect Flag", 190, function()
+        Config.AutoFlag = not Config.AutoFlag
+        autoFlagBtn.Text = Config.AutoFlag and "Desativar Auto Flag" or "Auto Collect Flag"
+    end)
+
+    local autoHopBtn = CriarBotao(mainFrame, "Auto Hop", 235, function()
+        Config.AutoHop = not Config.AutoHop
+        autoHopBtn.Text = Config.AutoHop and "Desativar Auto Hop" or "Auto Hop"
+    end)
+
+    -- Conteúdo da aba Bosses (simplificado)
+    local bossesFrame = Instance.new("Frame")
+    bossesFrame.Size = UDim2.new(1, 0, 1, 0)
+    bossesFrame.BackgroundTransparency = 1
+    bossesFrame.Visible = false
+    bossesFrame.Parent = contentArea
+
+    -- Botão de exemplo: Teleportar para Boss
+    local tpBossBtn = CriarBotao(bossesFrame, "Teleportar para Boss", 10, function()
+        -- Lógica para teleportar ao boss mais próximo
         local char = LocalPlayer.Character
         if not char then return end
         local root = char:FindFirstChild("HumanoidRootPart")
         if not root then return end
         for _, v in pairs(Workspace:GetDescendants()) do
-            if v:IsA("Model") and v:FindFirstChild("Humanoid") and v ~= char then
-                if v.Humanoid.Health > 0 then
-                    local target = v:FindFirstChild("HumanoidRootPart") or v:FindFirstChild("Torso")
-                    if target then
-                        root.CFrame = target.CFrame + Vector3.new(0, 5, 0)
-                        wait(Config.TeleportDelay)
-                        break
-                    end
+            if v:IsA("Model") and v:FindFirstChild("Humanoid") and v.Name:lower():find("boss") then
+                local hrp = v:FindFirstChild("HumanoidRootPart") or v:FindFirstChild("Torso")
+                if hrp then
+                    root.CFrame = hrp.CFrame + Vector3.new(0, 5, 0)
+                    break
                 end
             end
         end
     end)
 
-    -- ===== MINIMIZAR / RESTAURAR =====
+    -- Alternar visibilidade das abas
+    abaMain.MouseButton1Click:Connect(function()
+        mainFrame.Visible = true
+        bossesFrame.Visible = false
+    end)
+    abaBosses.MouseButton1Click:Connect(function()
+        mainFrame.Visible = false
+        bossesFrame.Visible = true
+    end)
+
+    -- Minimizar/Restaurar
     local minimizado = false
     bolha.MouseButton1Click:Connect(function()
         minimizado = not minimizado
         if minimizado then
             Tween(main, {Size = UDim2.new(0, 0, 0, 0)}, 0.3)
         else
-            Tween(main, {Size = UDim2.new(0, 320, 0, 400)}, 0.3)
+            Tween(main, {Size = UDim2.new(0, 500, 0, 400)}, 0.3)
         end
     end)
 
-    -- Fechar (opcional)
+    -- Fechar
     local closeBtn = Instance.new("TextButton")
     closeBtn.Size = UDim2.new(0, 30, 0, 30)
     closeBtn.Position = UDim2.new(1, -35, 0, 5)
@@ -331,11 +386,10 @@ function CriarHub()
     end)
 end
 
--- ==================== LÓGICA DE AUTO FARM ====================
+-- ==================== LÓGICA DE AUTO FARM (CORRIGIDA) ====================
 local function AutoFarmLoop()
-    while wait(0.1) do
+    while task.wait(0.1) do
         if not Config.AutoFarm then continue end
-
         local char = LocalPlayer.Character
         if not char then continue end
         local root = char:FindFirstChild("HumanoidRootPart")
@@ -360,20 +414,19 @@ local function AutoFarmLoop()
         if nearestMob then
             local targetPart = nearestMob:FindFirstChild("HumanoidRootPart") or nearestMob:FindFirstChild("Torso")
             if targetPart then
-                -- Teleporte suave (corrige o bug de voltar)
+                -- Teleporte corrigido: define CFrame e aguarda a física
                 root.CFrame = targetPart.CFrame + Vector3.new(0, 5, 0)
-                wait(0.2)
-                -- Ataque automático (simula clique)
+                task.wait(Config.TeleportDelay) -- espera a física estabilizar
+                -- Ataque automático
                 local tool = char:FindFirstChildOfClass("Tool")
                 if tool then
                     tool:Activate()
                 else
-                    -- Tenta usar skill (tecla Z)
                     local VirtualUser = game:GetService("VirtualUser")
                     VirtualUser:CaptureController()
                     VirtualUser:Button1Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
                 end
-                wait(Config.AttackDelay)
+                task.wait(Config.AttackDelay)
             end
         end
     end
@@ -381,14 +434,13 @@ end
 
 -- ==================== LÓGICA DE AUTO QUEST ====================
 local function AutoQuestLoop()
-    while wait(1) do
+    while task.wait(1) do
         if not Config.AutoQuest then continue end
         local char = LocalPlayer.Character
         if not char then continue end
         local root = char:FindFirstChild("HumanoidRootPart")
         if not root then continue end
 
-        -- Procura NPCs de quest (nomes comuns)
         for _, v in pairs(Workspace:GetDescendants()) do
             if v:IsA("Model") and v:FindFirstChild("Humanoid") then
                 local name = v.Name:lower()
@@ -396,12 +448,11 @@ local function AutoQuestLoop()
                     local hrp = v:FindFirstChild("HumanoidRootPart") or v:FindFirstChild("Torso")
                     if hrp then
                         root.CFrame = hrp.CFrame + Vector3.new(0, 5, 0)
-                        wait(0.5)
-                        -- Interage (ProximityPrompt)
+                        task.wait(0.5)
                         local prompt = v:FindFirstChildOfClass("ProximityPrompt")
                         if prompt then
                             prompt:InputHoldBegin()
-                            wait(0.2)
+                            task.wait(0.2)
                             prompt:InputHoldEnd()
                         end
                         break
@@ -412,10 +463,81 @@ local function AutoQuestLoop()
     end
 end
 
+-- ==================== LÓGICA DE AUTO MATERIAL ====================
+local function AutoMaterialLoop()
+    while task.wait(0.5) do
+        if not Config.AutoMaterial then continue end
+        local char = LocalPlayer.Character
+        if not char then continue end
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if not root then continue end
+
+        for _, v in pairs(Workspace:GetDescendants()) do
+            if v:IsA("Model") and v.Name == Config.MaterialSelecionado then
+                local hrp = v:FindFirstChild("HumanoidRootPart") or v:FindFirstChild("Torso")
+                if hrp then
+                    root.CFrame = hrp.CFrame + Vector3.new(0, 5, 0)
+                    task.wait(0.2)
+                    break
+                end
+            end
+        end
+    end
+end
+
+-- ==================== LÓGICA DE AUTO FLAG ====================
+local function AutoFlagLoop()
+    while task.wait(1) do
+        if not Config.AutoFlag then continue end
+        local char = LocalPlayer.Character
+        if not char then continue end
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if not root then return end
+
+        for _, v in pairs(Workspace:GetDescendants()) do
+            if v:IsA("Model") and v.Name:lower():find("flag") then
+                local hrp = v:FindFirstChild("HumanoidRootPart") or v:FindFirstChild("Torso")
+                if hrp then
+                    root.CFrame = hrp.CFrame + Vector3.new(0, 5, 0)
+                    break
+                end
+            end
+        end
+    end
+end
+
+-- ==================== LÓGICA DE AUTO HOP ====================
+local function AutoHopLoop()
+    while task.wait(5) do
+        if not Config.AutoHop then continue end
+        pcall(function()
+            TeleportService:Teleport(game.PlaceId, LocalPlayer)
+        end)
+    end
+end
+
+-- ==================== LÓGICA DE HITBOX ====================
+local function HitboxLoop()
+    while task.wait(1) do
+        for _, v in pairs(Workspace:GetDescendants()) do
+            if v:IsA("BasePart") and v.Parent and v.Parent:FindFirstChild("Humanoid") and v.Parent ~= LocalPlayer.Character then
+                if v.Name == "Hitbox" or v.Name == "Torso" or v.Name == "UpperTorso" then
+                    v.Size = Vector3.new(Config.HitboxRange, Config.HitboxRange, Config.HitboxRange)
+                    v.Transparency = 0.7
+                end
+            end
+        end
+    end
+end
+
 -- ==================== INICIALIZAÇÃO ====================
 -- Inicia loops em segundo plano
 spawn(AutoFarmLoop)
 spawn(AutoQuestLoop)
+spawn(AutoMaterialLoop)
+spawn(AutoFlagLoop)
+spawn(AutoHopLoop)
+spawn(HitboxLoop)
 
 -- Inicia tela de senha
 VerificarSenha()
