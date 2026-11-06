@@ -18,7 +18,7 @@
 
 local CFG = {
     KEY = "Millielover",
-    VERSION = "2.0",
+    VERSION = "2.1",
     FOLDER = "MillieHub",
     MILLIE_IMAGE_URL = "", -- optional direct png/jpg link (overrides the embedded art)
 }
@@ -78,7 +78,7 @@ local AUTO_QUEST = "Auto (best match)"
 
 local S = {
     -- farm
-    AutoFarm = false, TargetMob = AUTO_NEAREST, FarmPos = "Above", FarmDist = 9, TravelSpeed = 140,
+    AutoFarm = false, TargetMob = AUTO_NEAREST, FarmPos = "Behind", FarmDist = 4, TravelSpeed = 70, MoveMode = "Auto",
     AutoAttack = false, AttackMethod = "Auto", CPS = 6,
     SkillZ = false, SkillX = false, SkillC = false, SkillV = false, SkillG = false, SkillDelay = 1.6,
     BringMobs = false, BringRadius = 90, Hitbox = false, HitboxSize = 25, Reach = false, ReachSize = 16,
@@ -97,7 +97,7 @@ local S = {
 
 -- settings that are remembered between sessions (running toggles are NOT saved on purpose)
 local PERSIST = {
-    "TargetMob", "FarmPos", "FarmDist", "TravelSpeed", "AttackMethod", "CPS", "SkillDelay",
+    "TargetMob", "FarmPos", "FarmDist", "TravelSpeed", "MoveMode", "AttackMethod", "CPS", "SkillDelay",
     "BringRadius", "HitboxSize", "ReachSize", "AutoEquip", "Weapon", "EquipMode", "HotbarSlot",
     "QuestInterval", "AntiAFK", "WalkSpeed", "LootRadius", "SafeMode", "PauseOnStaff", "Notify",
     "UIScale", "MillieURL",
@@ -253,6 +253,22 @@ function Util.groundY(pos)
     return nil
 end
 
+function Util.tapGui(btn)
+    if not VIM then return false end
+    local inset = 0
+    local sg = btn:FindFirstAncestorOfClass("ScreenGui")
+    if sg and sg.IgnoreGuiInset == false then
+        local okI, tl = pcall(function() return GuiService:GetGuiInset() end)
+        if okI and tl then inset = tl.Y end
+    end
+    local p, s = btn.AbsolutePosition, btn.AbsoluteSize
+    local x, y = p.X + s.X / 2, p.Y + s.Y / 2 + inset
+    pcall(function() VIM:SendMouseButtonEvent(x, y, 0, true, game, 0) end)
+    task.wait(0.05)
+    pcall(function() VIM:SendMouseButtonEvent(x, y, 0, false, game, 0) end)
+    return true
+end
+
 function Util.fireButton(btn)
     if X.getconns then
         for _, sigName in ipairs({ "Activated", "MouseButton1Click", "MouseButton1Down" }) do
@@ -267,29 +283,15 @@ function Util.fireButton(btn)
             end
         end
     end
+    local sig = false
     if X.firesignal then
         local a = pcall(function() X.firesignal(btn.Activated) end)
         local b = pcall(function() X.firesignal(btn.MouseButton1Click) end)
-        if a or b then return true end
+        sig = a or b
     end
-    -- last resort: a real tap on the button
-    if VIM then
-        local ok = pcall(function()
-            local inset = 0
-            local sg = btn:FindFirstAncestorOfClass("ScreenGui")
-            if sg and sg.IgnoreGuiInset == false then
-                local okI, tl = pcall(function() return GuiService:GetGuiInset() end)
-                if okI and tl then inset = tl.Y end
-            end
-            local p, s = btn.AbsolutePosition, btn.AbsoluteSize
-            local x, y = p.X + s.X / 2, p.Y + s.Y / 2 + inset
-            VIM:SendMouseButtonEvent(x, y, 0, true, game, 0)
-            task.wait(0.05)
-            VIM:SendMouseButtonEvent(x, y, 0, false, game, 0)
-        end)
-        return ok
-    end
-    return false
+    -- no listener we could trigger directly: tap the button like a finger would
+    if VIM and Util.tapGui(btn) then return true end
+    return sig
 end
 
 function Util.firePrompt(prompt)
@@ -1626,22 +1628,43 @@ Hub.track(Workspace.DescendantAdded:Connect(function(d)
 end))
 
 ----------------------------------------------------------------------
--- mover: ONE place that moves the character (so loops never fight each other)
+-- mover: ONE place that moves the character (so loops never fight each other).
+-- Glide = capped-speed CFrame steps. If the server pulls us back, the hub slows
+-- down by itself and finally falls back to real walking (Humanoid:MoveTo).
 ----------------------------------------------------------------------
-function Mover.hold(on)
-    local root = Util.root()
-    if on and root then
-        if not Mover.bv or Mover.bv.Parent ~= root then
-            if Mover.bv then pcall(function() Mover.bv:Destroy() end) end
-            local bv = Instance.new("BodyVelocity")
-            bv.Name = rname(8)
-            bv.MaxForce = Vector3.new(1e9, 1e9, 1e9)
-            bv.Velocity = ZERO
-            bv.P = 12500
-            bv.Parent = root
-            Mover.bv = bv
-        end
-    elseif Mover.bv then
+local MIN_SPEED = 16
+
+function Mover.reset()
+    Mover.scale = 1
+    Mover.mode = "glide"
+    Mover.floorHits = 0
+    Mover.rollbacks = 0
+    Mover.lastDrop = 0
+    Mover.lastEvent = "none"
+    Mover.lastPos = nil
+    Mover.glided = false
+end
+Mover.reset()
+
+function Mover.walking()
+    return S.MoveMode == "Walk" or (S.MoveMode == "Auto" and Mover.mode == "walk")
+end
+
+function Mover.speed(it)
+    local base = math.min((it and it.speed) or S.TravelSpeed, Limits.speed())
+    local v = base * Mover.scale
+    if v < MIN_SPEED then v = math.min(MIN_SPEED, base) end
+    return v
+end
+
+function Mover.describe()
+    if Mover.walking() then return "walking" end
+    return string.format("gliding %.0f st/s", Mover.speed(nil))
+end
+
+-- kept for compatibility: BodyMovers are easy for games to detect, so none are used any more
+function Mover.hold()
+    if Mover.bv then
         pcall(function() Mover.bv:Destroy() end)
         Mover.bv = nil
     end
@@ -1649,9 +1672,15 @@ end
 
 function Mover.release(owner)
     if owner == nil or Mover.owner == owner then
+        local had = Mover.intent ~= nil
         Mover.intent = nil
         Mover.owner = nil
-        Mover.hold(false)
+        Mover.lastPos = nil
+        Mover.glided = false
+        if had and Mover.walking() then
+            local h, r = Util.hum(), Util.root()
+            if h and r then pcall(function() h:MoveTo(r.Position) end) end
+        end
     end
 end
 
@@ -1668,41 +1697,104 @@ function Mover.follow(owner, goalFn, speed)
     return Mover.intent
 end
 
--- blocking, speed-limited travel (yields until arrival / timeout / cancelled)
+-- blocking travel (yields until arrival / timeout / cancelled)
 function Mover.travel(owner, goalCF, speed, timeout)
     Mover.owner = owner
     local it = { kind = "goto", goal = goalCF, speed = speed, owner = owner, done = false }
     Mover.intent = it
+    if not timeout then
+        local r = Util.root()
+        local d = r and (goalCF.Position - r.Position).Magnitude or 100
+        timeout = d / MIN_SPEED * 1.5 + 20
+    end
     local t0 = os.clock()
     while Hub.alive and not it.done and Mover.intent == it do
-        if os.clock() - t0 > (timeout or 60) then break end
+        if os.clock() - t0 > timeout then break end
         task.wait(0.05)
     end
     local arrived = it.done
-    if Mover.intent == it then
-        Mover.intent = nil
-        Mover.owner = nil
-        Mover.hold(false)
-    end
+    if Mover.intent == it then Mover.release(owner) end
     return arrived
+end
+
+-- the server (or the game) moved us when we did not ask for it, or we are not getting anywhere
+function Mover.onRollback(kind, amount)
+    local now = os.clock()
+    Mover.rollbacks = Mover.rollbacks + 1
+    Mover.lastEvent = string.format("%s %.0f studs at t=%.0f", kind, amount or 0, now)
+    if now - Mover.lastDrop < 1.0 or Mover.walking() then return end
+    Mover.lastDrop = now
+    if Mover.speed(nil) > MIN_SPEED + 0.5 then
+        Mover.scale = math.max(Mover.scale * 0.55, 0.05)
+        Hub.note("rb", string.format("Server pulled you back: slowing down to %.0f st/s", Mover.speed(nil)), "bad")
+    else
+        Mover.floorHits = Mover.floorHits + 1
+        if Mover.floorHits >= 2 and S.MoveMode == "Auto" then
+            Mover.mode = "walk"
+            Hub.note("rb2", "Still pulled back at minimum speed: switching to real walking.", "bad")
+        end
+    end
 end
 
 function Mover.step(dt)
     local it = Mover.intent
-    if not it then return end
+    if not it then
+        Mover.lastPos = nil
+        return
+    end
     local root, hum = Util.root(), Util.hum()
-    if not root or not hum or hum.Health <= 0 then return end
+    if not root or not hum or hum.Health <= 0 then
+        Mover.lastPos = nil
+        return
+    end
+    local now = os.clock()
+    local pos = root.Position
+    if Mover.glided and Mover.lastPos then
+        local err = (pos - Mover.lastPos).Magnitude
+        if err > 7 then Mover.onRollback("snap", err) end
+    end
     local goal
     if it.kind == "goto" then goal = it.goal else goal = it.goalFn and it.goalFn() end
-    Mover.hold(true)
+    if not goal then
+        Mover.lastPos = nil
+        return
+    end
+    local gpos = goal.Position
+    local dist = (gpos - pos).Magnitude
+    it.dist = dist
+    local walking = Mover.walking()
+    -- progress watchdog (every 1.4s: did we get closer to the goal we had at the start of the window?)
+    if not it.win or now - it.win.t > 1.4 then
+        local w = it.win
+        if w and w.d > 8 and dist > 8 then
+            local gained = w.d - (w.g - pos).Magnitude
+            local expect = w.v * (now - w.t)
+            if gained < expect * 0.25 then
+                it.stall = (it.stall or 0) + 1
+                Mover.onRollback("stall", expect - gained)
+            else
+                it.stall = 0
+            end
+        end
+        it.win = { t = now, d = dist, g = gpos, v = walking and math.max(hum.WalkSpeed, 8) or Mover.speed(it) }
+    end
+    if walking then
+        Mover.glided = false
+        Mover.lastPos = nil
+        if it.kind == "goto" and dist < 3.5 then it.done = true end
+        if now - (it.mt or 0) > 0.12 then
+            it.mt = now
+            pcall(function() hum:MoveTo(gpos) end)
+        end
+        if (it.stall or 0) >= 1 and now - (it.jt or 0) > 1.2 then
+            it.jt = now
+            pcall(function() hum.Jump = true end)
+        end
+        return
+    end
     root.AssemblyLinearVelocity = ZERO
     root.AssemblyAngularVelocity = ZERO
-    if not goal then return end
-    local cur = root.CFrame
-    local pos, gpos = cur.Position, goal.Position
-    local delta = gpos - pos
-    local dist = delta.Magnitude
-    local speed = math.min(it.speed or S.TravelSpeed, Limits.speed())
+    local speed = Mover.speed(it)
     local step
     if it.kind == "goto" then
         step = math.min(dist, speed * dt)
@@ -1710,11 +1802,13 @@ function Mover.step(dt)
         step = math.min(dist * (1 - math.exp(-(it.smooth or 12) * dt)), speed * dt)
     end
     local newPos = pos
-    if dist > 0.001 then newPos = pos + delta.Unit * step end
+    if dist > 0.001 then newPos = pos + (gpos - pos).Unit * step end
+    local cur = root.CFrame
     local a = 1 - math.exp(-14 * dt)
     local newRot = (cur - cur.Position):Lerp(goal - goal.Position, a)
     root.CFrame = CFrame.new(newPos) * newRot
-    it.dist = dist
+    Mover.lastPos = newPos
+    Mover.glided = true
     if it.kind == "goto" and dist < 1.5 then it.done = true end
 end
 
@@ -1724,9 +1818,14 @@ Hub.track(RunService.Heartbeat:Connect(function(dt)
 end))
 
 Hub.track(RunService.Stepped:Connect(function()
-    if not (Mover.intent or S.Noclip) then return end
+    local gliding = Mover.intent ~= nil and not Mover.walking()
+    if not (gliding or S.Noclip) then return end
     local c = LP.Character
     if not c then return end
+    if gliding then
+        local r = c:FindFirstChild("HumanoidRootPart")
+        if r then r.AssemblyLinearVelocity = ZERO end
+    end
     for _, p in ipairs(c:GetDescendants()) do
         if p:IsA("BasePart") and p.CanCollide then p.CanCollide = false end
     end
@@ -1805,7 +1904,36 @@ end)
 ----------------------------------------------------------------------
 -- attack (adaptive: tries several input methods and keeps the one that lowers mob health)
 ----------------------------------------------------------------------
-local METHOD_BY_NAME = { Tool = "tool", Click = "click", Button = "button", VirtualUser = "vuser" }
+Attack.methods = { "tool", "click", "touch", "button", "vuser" }
+Attack.stats = {}
+local METHOD_BY_NAME = { Tool = "tool", Click = "click", Touch = "touch", Button = "button", VirtualUser = "vuser" }
+local NAME_BY_METHOD = { tool = "Tool", click = "Click", touch = "Touch", button = "Button", vuser = "VirtualUser" }
+
+-- health of a mob (Humanoid, or an attribute / value some games use instead)
+function Mobs.hp(e)
+    if e.hpSrc == nil then
+        e.hpSrc = false
+        local m = e.model
+        if type(m:GetAttribute("Health")) == "number" then
+            e.hpSrc = { "attr", "Health" }
+        elseif type(m:GetAttribute("HP")) == "number" then
+            e.hpSrc = { "attr", "HP" }
+        else
+            local v = m:FindFirstChild("Health") or m:FindFirstChild("HP")
+            if v and v:IsA("ValueBase") and type(v.Value) == "number" then e.hpSrc = { "val", v } end
+        end
+    end
+    local s = e.hpSrc
+    if s then
+        if s[1] == "attr" then
+            local a = e.model:GetAttribute(s[2])
+            if type(a) == "number" then return a end
+        elseif s[2].Parent then
+            return s[2].Value
+        end
+    end
+    return e.hum.Health
+end
 
 function Attack.findButton()
     if Attack.btn and Attack.btn.Parent and os.clock() - Attack.btnT < 4 then return Attack.btn end
@@ -1830,9 +1958,20 @@ function Attack.findButton()
     return Attack.btn
 end
 
+-- turn towards the mob (rotation only, no position change)
+function Attack.face(t)
+    local root = Util.root()
+    if not root then return end
+    if Mover.intent and not Mover.walking() then return end
+    local tp = t.root.Position
+    local at = Vector3.new(tp.X, root.Position.Y, tp.Z)
+    if (at - root.Position).Magnitude < 0.5 then return end
+    root.CFrame = CFrame.lookAt(root.Position, at)
+end
+
 function Attack.swing()
     local m
-    if S.AttackMethod == "Auto" then m = Attack.methods[Attack.idx] else m = METHOD_BY_NAME[S.AttackMethod] end
+    if S.AttackMethod == "Auto" then m = Attack.methods[Attack.idx] else m = METHOD_BY_NAME[S.AttackMethod] or "tool" end
     if m == "tool" then
         local t = Equip.current()
         if t then
@@ -1847,10 +1986,19 @@ function Attack.swing()
         task.wait(Util.rand(0.02, 0.05))
         pcall(function() VIM:SendMouseButtonEvent(x, y, 0, false, game, 0) end)
         return true
+    elseif m == "touch" then
+        if not VIM then return false end
+        local x, y = Util.freeClickPoint()
+        local ok = pcall(function() VIM:SendTouchEvent(1, 0, x, y) end)
+        if not ok then return false end
+        task.wait(Util.rand(0.03, 0.07))
+        pcall(function() VIM:SendTouchEvent(1, 2, x, y) end)
+        return true
     elseif m == "button" then
         local b = Attack.findButton()
-        if b then return Util.fireButton(b) end
-        return false
+        if not b then return false end
+        if VIM then return Util.tapGui(b) end
+        return Util.fireButton(b)
     elseif m == "vuser" then
         if not VirtualUser then return false end
         local cam = Workspace.CurrentCamera
@@ -1870,24 +2018,31 @@ function Attack.step(t)
     local w = Attack.watch
     if w.target ~= t then
         w.target = t
-        w.hp = t.hum.Health
+        w.hp = Mobs.hp(t)
         w.n = 0
         w.total = 0
     end
-    local ok = Attack.swing()
-    if not ok then
+    Attack.face(t)
+    local m = (S.AttackMethod == "Auto") and Attack.methods[Attack.idx] or (METHOD_BY_NAME[S.AttackMethod] or "tool")
+    local st = Attack.stats[m]
+    if not st then
+        st = { tries = 0, hits = 0 }
+        Attack.stats[m] = st
+    end
+    if not Attack.swing() then
         if S.AttackMethod == "Auto" then Attack.idx = Attack.idx % #Attack.methods + 1 end
-        w.n = w.n + 1
         return false
     end
+    st.tries = st.tries + 1
     w.n = w.n + 1
     w.total = w.total + 1
-    local hp = t.hum.Health
+    local hp = Mobs.hp(t)
     if hp < w.hp - 0.001 then
+        st.hits = st.hits + 1
         w.hp = hp
         w.n = 0
         w.total = 0
-        Attack.good = Attack.methods[Attack.idx]
+        Attack.good = m
     elseif w.n >= 10 then
         w.n = 0
         if S.AttackMethod == "Auto" then
@@ -1900,13 +2055,70 @@ function Attack.step(t)
         Farm.spot = nil
         Hub.note("bring", "Bring Mobs paused 40s: the server is not accepting moved mobs.", "bad")
     end
-    if w.total >= 45 then
-        Mobs.blacklist(t, 25)
+    if w.total >= 60 then
         w.total = 0
-        w.target = nil
-        Hub.note("stuck", "Could not damage " .. t.base .. " - skipping it for 25s.", "bad")
+        if Attack.good then
+            Mobs.blacklist(t, 25)
+            w.target = nil
+            Hub.note("stuck", "Could not damage " .. t.base .. " - skipping it for 25s.", "bad")
+        else
+            Hub.note("noatk", "No attack method has damaged anything yet. Stand next to a mob, equip your weapon and press Test attack methods.", "bad")
+        end
     end
     return true
+end
+
+-- tries every input method on the nearest mob and reports which one really hurts it
+function Attack.test()
+    if not Util.alive() then return "You are not alive." end
+    local t = Mobs.nearestWithin(150)
+    if not t then return "No mob found within 150 studs. Walk near some mobs first." end
+    Hub.stopAutomation("attack test")
+    Attack.testing = true
+    local ok, res = pcall(function()
+        Equip.ensure()
+        task.wait(0.4)
+        local tp = t.root.Position
+        local stand = Vector3.new(tp.X, tp.Y, tp.Z - 4)
+        Mover.travel("test", CFrame.lookAt(stand, tp), S.TravelSpeed)
+        task.wait(0.4)
+        local results, first = {}, nil
+        local saved = S.AttackMethod
+        for _, m in ipairs(Attack.methods) do
+            if not Mobs.isAlive(t) then t = Mobs.nearestWithin(40) end
+            if not t then break end
+            S.AttackMethod = NAME_BY_METHOD[m]
+            local hp0, sent = Mobs.hp(t), 0
+            for _ = 1, 7 do
+                Attack.face(t)
+                if Attack.swing() then sent = sent + 1 end
+                task.wait(0.28)
+            end
+            task.wait(0.5)
+            local hit = (not Mobs.isAlive(t)) or Mobs.hp(t) < hp0 - 0.001
+            results[#results + 1] = m .. "=" .. (sent == 0 and "n/a" or (hit and "YES" or "no"))
+            if hit and sent > 0 and not first then first = m end
+        end
+        S.AttackMethod = saved
+        local summary = table.concat(results, "  ")
+        if first then
+            local nm = NAME_BY_METHOD[first]
+            if UI.dropdowns.AttackMethod then UI.dropdowns.AttackMethod.Set(nm) else S.AttackMethod = nm end
+            Attack.good = first
+            summary = summary .. "  ->  using " .. nm
+        else
+            summary = summary .. "  ->  none damaged the mob (equip your weapon, stand next to it, then send me the Scanner report)"
+        end
+        return summary
+    end)
+    Attack.testing = false
+    Mover.release("test")
+    if not ok then
+        Hub.err("attacktest", res)
+        return "Test failed: " .. tostring(res)
+    end
+    Attack.lastTest = res
+    return res
 end
 
 ----------------------------------------------------------------------
@@ -1921,16 +2133,18 @@ function Farm.goal()
     if flat.Magnitude < 0.05 then flat = Vector3.new(0, 0, -1) else flat = flat.Unit end
     local d = Util.clamp(S.FarmDist, 2, 45)
     local pos
-    if S.FarmPos == "Above" then
+    if Mover.walking() then
+        pos = tp - flat * math.min(d, 5)
+    elseif S.FarmPos == "Above" then
         pos = tp + Vector3.new(0, d, 0) - flat * 1.5
     elseif S.FarmPos == "Behind" then
-        pos = tp - flat * d + Vector3.new(0, 1.5, 0)
+        pos = tp - flat * d
     else
-        pos = tp + flat * d + Vector3.new(0, 1.5, 0)
+        pos = tp + flat * d
     end
-    if S.SafeMode then
+    if S.SafeMode and not Mover.walking() then
         local tt = os.clock()
-        pos = pos + Vector3.new(math.sin(tt * 1.7) * 0.4, math.sin(tt * 2.3) * 0.25, math.cos(tt * 1.3) * 0.4)
+        pos = pos + Vector3.new(math.sin(tt * 1.7) * 0.35, math.sin(tt * 2.3) * 0.2, math.cos(tt * 1.3) * 0.35)
     end
     return CFrame.lookAt(pos, tp)
 end
@@ -1980,7 +2194,7 @@ Hub.loop("farm", function()
         local k = Mobs.known[S.TargetMob]
         if k and k.pos then
             Hub.status = "Heading to the " .. S.TargetMob .. " area..."
-            local home = k.pos + Vector3.new(0, 14, 0)
+            local home = k.pos + Vector3.new(0, 4, 0)
             Mover.follow("farm", function() return Util.cfAt(home) end, S.TravelSpeed)
             return 0.5
         end
@@ -1990,13 +2204,20 @@ Hub.loop("farm", function()
         return 0.8
     end
     Farm.updateSpot(t)
-    Hub.status = string.format("Farming %s  (%d alive)", t.base, #Mobs.alive())
+    Hub.status = string.format("Farming %s (%d alive) | %s", t.base, #Mobs.alive(), Mover.describe())
     Mover.follow("farm", Farm.goal, S.TravelSpeed)
+    local it = Mover.intent
+    if it and Mover.owner == "farm" and (it.stall or 0) >= 3 and Mover.walking() then
+        it.stall = 0
+        Mobs.blacklist(t, 20)
+        Farm.target = nil
+        Hub.note("unreach", "Cannot reach " .. t.base .. " (blocked) - trying another one.", "bad")
+    end
     return 0.05
 end)
 
 Hub.loop("attack", function()
-    if not S.AutoAttack or Hub.paused or not Util.alive() then return 0.25 end
+    if not S.AutoAttack or Hub.paused or Attack.testing or not Util.alive() then return 0.25 end
     local root = Util.root()
     local reach = S.FarmDist + 20 + (S.Hitbox and S.HitboxSize * 0.5 or 0)
     local t = Farm.target
@@ -2197,18 +2418,37 @@ function Quest.scan()
     return list
 end
 
+local SHOP_WORDS = {
+    "shop", "merchant", "dealer", "trainer", "vendor", "seller", "banker", "blacksmith", "gacha", "prestige",
+    "reroll", "fisherman", "teacher", "tracker",
+}
+
+function Quest.isShop(name)
+    local l = name:lower()
+    for _, w in ipairs(SHOP_WORDS) do
+        if l:find(w, 1, true) then return true end
+    end
+    return false
+end
+
 function Quest.labels()
-    local out = { AUTO_QUEST }
+    local root = Util.root()
     local arr = {}
     for _, c in ipairs(Quest.prompts) do
-        if c.score >= 1 then arr[#arr + 1] = c.label end
+        if c.hasModel then
+            arr[#arr + 1] = { label = c.label, d = root and (c.pos - root.Position).Magnitude or 0, score = c.score }
+        end
     end
-    table.sort(arr)
-    local seen = {}
-    for _, l in ipairs(arr) do
-        if not seen[l] then
-            seen[l] = true
-            out[#out + 1] = l
+    table.sort(arr, function(a, b)
+        if a.score ~= b.score then return a.score > b.score end
+        return a.d < b.d
+    end)
+    local out, seen = { AUTO_QUEST }, {}
+    for _, a in ipairs(arr) do
+        if not seen[a.label] then
+            seen[a.label] = true
+            out[#out + 1] = a.label
+            if #out >= 40 then break end
         end
     end
     return out
@@ -2225,7 +2465,7 @@ function Quest.pick()
     local ref = Farm.refPos()
     local best, bs = nil, -math.huge
     for _, c in ipairs(list) do
-        if c.score >= 1 and c.hasModel then
+        if c.hasModel and (c.score >= 1 or not Quest.isShop(c.name)) then
             local d = ref and (c.pos - ref).Magnitude or 0
             local s = c.score * 1000 - d
             if s > bs then best, bs = c, s end
@@ -2234,19 +2474,25 @@ function Quest.pick()
     return best
 end
 
+function Quest.badText(t)
+    t = (t or ""):lower()
+    for _, w in ipairs(BAD_BTN) do
+        if t == w or t:find("%f[%a]" .. w .. "%f[%A]") then return true end
+    end
+    return false
+end
+
 function Quest.goodText(t)
     t = (t or ""):lower()
-    if t == "" then return false end
-    for _, w in ipairs(BAD_BTN) do
-        if t == w or t:find("%f[%a]" .. w .. "%f[%A]") then return false end
-    end
+    if t == "" or Quest.badText(t) then return false end
     for _, w in ipairs(GOOD_BTN) do
         if t:find(w, 1, true) then return true end
     end
     return false
 end
 
-function Quest.buttons()
+-- every visible button with a short, harmless label  ->  { button = text }
+function Quest.visible()
     local out = {}
     local pg = LP:FindFirstChild("PlayerGui")
     if not pg then return out end
@@ -2260,30 +2506,48 @@ function Quest.buttons()
                 local lbl = d:FindFirstChildWhichIsA("TextLabel", true)
                 tx = lbl and lbl.Text or ""
             end
-            if Quest.goodText(tx) and Util.guiVisible(d) then out[d] = true end
+            if tx ~= "" and #tx <= 28 and not Quest.badText(tx) and Util.guiVisible(d) then out[d] = tx end
         end
     end
     return out
 end
 
 function Quest.interact(c)
-    local before = Quest.buttons()
+    local before = Quest.visible()
     Util.firePrompt(c.prompt)
-    local clicked = 0
-    for i = 1, 7 do
-        task.wait(0.45)
-        local now = Quest.buttons()
-        local any = false
-        for b in pairs(now) do
+    local clicked, idle = 0, 0
+    local key = c.prompt.KeyboardKeyCode
+    if not key or key == Enum.KeyCode.Unknown then key = Enum.KeyCode.E end
+    for i = 1, 9 do
+        task.wait(0.5)
+        local now = Quest.visible()
+        local pickB, pickScore = nil, 0
+        for b, tx in pairs(now) do
             if not before[b] then
-                if Util.fireButton(b) then
-                    clicked = clicked + 1
-                    any = true
-                end
-                before[b] = true
+                local sc = Quest.goodText(tx) and 2 or 1
+                if sc > pickScore then pickB, pickScore = b, sc end
             end
         end
-        if not any and i >= 3 then break end
+        if pickB then
+            idle = 0
+            before[pickB] = true
+            if Util.fireButton(pickB) then clicked = clicked + 1 end
+        else
+            idle = idle + 1
+            if clicked > 0 and idle >= 3 then break end
+            if clicked == 0 then
+                -- nothing opened yet: interact like a real player (hold the prompt key / hold the prompt)
+                if i == 2 or i == 6 then
+                    Util.pressKey(key, (c.prompt.HoldDuration or 0) + 0.25)
+                elseif i == 4 or i == 8 then
+                    pcall(function()
+                        c.prompt:InputHoldBegin()
+                        task.wait((c.prompt.HoldDuration or 0) + 0.15)
+                        c.prompt:InputHoldEnd()
+                    end)
+                end
+            end
+        end
     end
     return clicked
 end
@@ -2346,8 +2610,8 @@ function Quest.run()
     local c = Quest.pick()
     Quest.last = os.clock()
     if not c then
-        Quest.info = "No quest NPC found nearby. Walk to an island and press Scan."
-        Hub.note("noquest", "Auto Quest: no quest NPC found. Use Scan Quest NPCs.", "bad")
+        Quest.info = "No quest NPC found nearby. Walk to an island, press Scan quest NPCs, or pick one in the list."
+        Hub.note("noquest", "Auto Quest: no quest NPC found. Use Scan quest NPCs.", "bad")
         return false
     end
     local root = Util.root()
@@ -2360,7 +2624,7 @@ function Quest.run()
     local stand = pos + dir * 4
     local gy = Util.groundY(stand)
     if gy then stand = Vector3.new(stand.X, gy + 3.2, stand.Z) end
-    local arrived = Mover.travel("quest", CFrame.lookAt(stand, Vector3.new(pos.X, stand.Y, pos.Z)), S.TravelSpeed, 80)
+    local arrived = Mover.travel("quest", CFrame.lookAt(stand, Vector3.new(pos.X, stand.Y, pos.Z)), S.TravelSpeed)
     if not arrived then
         Quest.info = "Could not reach " .. c.name .. " (blocked or cancelled)."
         return false
@@ -2498,7 +2762,7 @@ function TP.go(pos, label, standOff)
             root.CFrame = CFrame.new(dest)
             root.AssemblyLinearVelocity = ZERO
         else
-            local ok = Mover.travel("tp", Util.cfAt(dest), S.TravelSpeed, 120)
+            local ok = Mover.travel("tp", Util.cfAt(dest), S.TravelSpeed)
             if not ok then
                 Hub.note("tp", "Teleport interrupted.", "bad")
                 Hub.status = "Idle"
@@ -2728,6 +2992,11 @@ function Scan.report()
     local b = Attack.findButton()
     add("Attack button found: " .. (b and b:GetFullName() or "no") .. "   method now: " .. Attack.methods[Attack.idx] .. "   last good: " .. tostring(Attack.good))
     add("Tools: " .. table.concat(Equip.tools(), ", "))
+    add(string.format("Movement: %s | setting %s | pull-backs %d | last: %s", Mover.describe(), S.MoveMode, Mover.rollbacks, Mover.lastEvent))
+    local st = {}
+    for m, v in pairs(Attack.stats) do st[#st + 1] = string.format("%s %d/%d", m, v.hits, v.tries) end
+    table.sort(st)
+    add("Attack hits/tries: " .. (#st == 0 and "none yet" or table.concat(st, ", ")) .. "  | last test: " .. tostring(Attack.lastTest or "-"))
     local rem = {}
     pcall(function()
         for _, d in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
@@ -2854,15 +3123,29 @@ function UI.buildPages()
         Farm.spot = nil
     end)
     p:Dropdown("Farm Position", "FarmPos", function() return { "Above", "Behind", "Front" } end)
-    p:Slider("Farm Distance", "FarmDist", 3, 40, 1, " st")
-    p:Slider("Travel Speed", "TravelSpeed", 60, 260, 5, " st/s")
+    p:Slider("Farm Distance", "FarmDist", 2, 40, 1, " st")
+    p:Slider("Travel Speed", "TravelSpeed", 20, 260, 5, " st/s")
+    p:Dropdown("Movement", "MoveMode", function() return { "Auto", "Glide", "Walk" } end, function() Mover.reset() end)
+    p:Button("Reset movement tuning", function()
+        Mover.reset()
+        Hub.note("mv", "Movement tuning reset.", "ok")
+    end)
 
     p:Section("Combat")
     p:Toggle("Auto Attack", "AutoAttack")
     p:Dropdown("Attack Method", "AttackMethod", function()
-        return { "Auto", "Tool", "Click", "Button", "VirtualUser" }
+        return { "Auto", "Tool", "Click", "Touch", "Button", "VirtualUser" }
     end, function() Attack.watch = {} end)
     p:Slider("Attack Speed", "CPS", 1, 14, 1, " cps")
+    local atest = p:Paragraph("Attack test: not run yet. Stand near mobs with your weapon in the backpack, then press the button.")
+    p:Button("Test attack methods", function()
+        task.spawn(function()
+            atest.Set("Testing every attack method on the nearest mob (about 20 seconds)...")
+            local r = Attack.test()
+            atest.Set("Attack test: " .. r)
+            Hub.note("atest", "Attack test finished.", "ok")
+        end)
+    end, true)
     p:Chips("Auto Skills", {
         { label = "Z", key = "SkillZ" }, { label = "X", key = "SkillX" }, { label = "C", key = "SkillC" },
         { label = "V", key = "SkillV" }, { label = "G", key = "SkillG" },
@@ -2930,7 +3213,7 @@ function UI.buildPages()
     -------------------------------------------------------- TELEPORT
     local t = UI.addTab("Teleport")
     t:Section("Safe teleport")
-    t:Paragraph("Glides you there at a capped speed with noclip, then drops you on the ground. No instant snapping, so the server does not drag you back. Auto Farm / Quest switch off while you travel.")
+    t:Paragraph("Glides you there at a capped speed (it slows itself down if the server pulls you back, then falls back to real walking; see Movement in the Farm tab). Auto Farm / Quest switch off while you travel.")
     t:Button("Rescan map (islands, NPCs)", function()
         task.spawn(function()
             Quest.scan()
