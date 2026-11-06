@@ -1,5 +1,5 @@
 --[[
-    MILLIE HUB  -  "Millie lazy"  v3.0 PREMIUM   (Legacy Piece edition)
+    MILLIE HUB  -  "Millie lazy"  v2.1   (Legacy Piece edition)
     Built for mobile executors (Delta). One file, no external dependencies.
 
     Password ............ Millielover
@@ -9,19 +9,16 @@
                           drop millie.png into your executor's workspace/MillieHub.
 
     Honest notes
-    * No automation is guaranteed to be safe from game enforcement.
-    * Auto Attack never presses or holds the global mouse/touch input. It uses
-      an equipped Tool or the game's own visible attack-button signal only.
-    * Scanning is event-driven after startup; StreamingEnabled limits discovery
-      to instances currently streamed to this client.
-    * Game-specific quest requirements and NPC levels are best-effort reads,
-      not a hard-coded Legacy Piece database. The Scanner tab
-      shows what was found and the last error of every module.
+    * Nothing here is "ban proof". Safe Mode keeps speeds, click rates and
+      movement human-looking; use an alt account.
+    * Legacy Piece changes its internals often, so mobs / quest NPCs / attack
+      buttons are DISCOVERED at runtime instead of hard-coded. The Scanner tab
+      shows exactly what was found and the last error of every module.
 ]]
 
 local CFG = {
     KEY = "Millielover",
-    VERSION = "3.0",
+    VERSION = "2.1",
     FOLDER = "MillieHub",
     MILLIE_IMAGE_URL = "", -- optional direct png/jpg link (overrides the embedded art)
 }
@@ -94,17 +91,16 @@ local S = {
     FPSBoost = false, Disable3D = false, AutoRejoin = false, InstantTP = false,
     TPIsland = "(pick one)", TPNPC = "(pick one)", TPPlayer = "(pick one)",
     -- safety
-    SafeMode = true, Notify = true,
+    SafeMode = true, PauseOnStaff = true, Notify = true,
     -- ui
     UIScale = 1, MillieURL = "",
-    AutoScan = true, BossRadar = false,
 }
 
 -- settings that are remembered between sessions (running toggles are NOT saved on purpose)
 local PERSIST = {
     "TargetMob", "FarmPos", "FarmDist", "TravelSpeed", "AttackMethod", "CPS", "SkillDelay",
     "BringRadius", "HitboxSize", "ReachSize", "AutoEquip", "Weapon", "EquipMode", "HotbarSlot",
-    "QuestInterval", "AntiAFK", "WalkSpeed", "LootRadius", "SafeMode", "Notify",
+    "QuestInterval", "AntiAFK", "WalkSpeed", "LootRadius", "SafeMode", "PauseOnStaff", "Notify",
     "UIScale", "MillieURL",
 }
 
@@ -120,7 +116,7 @@ function Limits.hitbox() return S.SafeMode and 40 or 90 end
 ----------------------------------------------------------------------
 local Hub = {
     alive = true, paused = false, pauseReason = "", unlocked = false,
-    conns = {}, errors = {}, status = "Idle", noteT = {}, dirtyAt = nil,
+    conns = {}, errors = {}, status = "Idle", noteT = {}, dirtyAt = nil, staff = {},
 }
 
 function Hub.track(c)
@@ -259,59 +255,63 @@ function Util.groundY(pos)
 end
 
 function Util.fireButton(btn)
-    if not btn or not btn.Parent or not btn:IsA("GuiButton") then return false end
-
-    -- Prefer Activated: Roblox defines it for mouse, touch and gamepad.
-    -- Executor signal firing is optional; importantly, no global mouse/touch
-    -- coordinates are sent as a fallback.
     if X.getconns then
-        local ok, conns = pcall(function() return X.getconns(btn.Activated) end)
-        if ok and type(conns) == "table" then
-            local fired = false
-            for _, connection in ipairs(conns) do
-                local enabled = true
-                pcall(function() enabled = connection.Enabled ~= false end)
-                if enabled then
-                    local okFire = pcall(function() connection:Fire() end)
-                    fired = fired or okFire
+        for _, sigName in ipairs({ "Activated", "MouseButton1Click", "MouseButton1Down" }) do
+            local ok, conns = pcall(function() return X.getconns(btn[sigName]) end)
+            if ok and type(conns) == "table" then
+                local fired = false
+                for _, c in ipairs(conns) do
+                    local ok2 = pcall(function() c:Fire() end)
+                    if ok2 then fired = true end
                 end
+                if fired then return true end
             end
-            if fired then return true end
         end
     end
-
     if X.firesignal then
-        local ok = pcall(function() X.firesignal(btn.Activated) end)
-        if ok then return true end
+        local a = pcall(function() X.firesignal(btn.Activated) end)
+        local b = pcall(function() X.firesignal(btn.MouseButton1Click) end)
+        if a or b then return true end
+    end
+    -- last resort: a real tap on the button
+    if VIM then
+        local ok = pcall(function()
+            local inset = 0
+            local sg = btn:FindFirstAncestorOfClass("ScreenGui")
+            if sg and sg.IgnoreGuiInset == false then
+                local okI, tl = pcall(function() return GuiService:GetGuiInset() end)
+                if okI and tl then inset = tl.Y end
+            end
+            local p, s = btn.AbsolutePosition, btn.AbsoluteSize
+            local x, y = p.X + s.X / 2, p.Y + s.Y / 2 + inset
+            VIM:SendMouseButtonEvent(x, y, 0, true, game, 0)
+            task.wait(0.05)
+            VIM:SendMouseButtonEvent(x, y, 0, false, game, 0)
+        end)
+        return ok
     end
     return false
 end
 
 function Util.firePrompt(prompt)
-    if not prompt or not prompt.Parent or not prompt.Enabled then return false end
     if X.fireprompt then
         local ok = pcall(X.fireprompt, prompt)
         if ok then return true end
     end
-
-    local began = false
     local ok = pcall(function()
         prompt:InputHoldBegin()
-        began = true
-        task.wait(math.max(0, prompt.HoldDuration or 0) + 0.12)
+        task.wait((prompt.HoldDuration or 0) + 0.12)
+        prompt:InputHoldEnd()
     end)
-    if began then pcall(function() prompt:InputHoldEnd() end) end
     return ok
 end
 
 function Util.pressKey(kc, hold)
-    if not VIM or not kc then return false end
-    local okDown = pcall(function() VIM:SendKeyEvent(true, kc, false, game) end)
-    if not okDown then return false end
-    pcall(task.wait, hold or Util.rand(0.04, 0.09))
-    -- Always release after the wait, even if the game state changes mid-action.
-    local okUp = pcall(function() VIM:SendKeyEvent(false, kc, false, game) end)
-    return okUp
+    if not VIM then return false end
+    pcall(function() VIM:SendKeyEvent(true, kc, false, game) end)
+    task.wait(hold or Util.rand(0.04, 0.09))
+    pcall(function() VIM:SendKeyEvent(false, kc, false, game) end)
+    return true
 end
 
 ----------------------------------------------------------------------
@@ -1338,7 +1338,7 @@ Mobs.black = setmetatable({}, { __mode = "k" })
 Mobs.retry = setmetatable({}, { __mode = "k" })
 local Mover = { intent = nil, owner = nil, bv = nil }
 local Equip = { lastKey = 0 }
-local Attack = { methods = { "tool", "button" }, idx = 1, watch = {}, btn = nil, btnT = 0, good = nil, lastWarn = 0 }
+local Attack = { methods = { "tool", "click", "button", "vuser" }, idx = 1, watch = {}, btn = nil, btnT = 0 }
 local Farm = { target = nil, spot = nil, spotOff = 0 }
 local Quest = { prompts = {}, last = 0, first = false, progT = 0, progV = "none", info = "No quest run yet." }
 local POI = { islands = {}, npcs = {} }
@@ -1347,10 +1347,7 @@ local Misc = {}
 local Scan = {}
 local Hitbox = { orig = setmetatable({}, { __mode = "k" }) }
 local Reach = { orig = setmetatable({}, { __mode = "k" }) }
-local Bring = { orig = setmetatable({}, { __mode = "k" }) }
-local Noclip = { orig = setmetatable({}, { __mode = "k" }) }
-local SpeedControl = { hum = nil, original = nil }
-local Boss = { notified = setmetatable({}, { __mode = "k" }) }
+local Bring = {}
 local Cfg = {}
 
 local KEYS = {
@@ -1365,10 +1362,39 @@ function Util.cfAt(pos)
 end
 
 function Util.owned(part)
-    -- Do not try to move another model unless ownership can be confirmed.
-    if not X.isowner or not part then return false end
-    local ok, result = pcall(X.isowner, part)
-    return ok and result == true
+    if not X.isowner then return true end
+    local ok, r = pcall(X.isowner, part)
+    return ok and r == true
+end
+
+function UI.rects()
+    local out = {}
+    for _, o in ipairs({ UI.win, UI.bubble }) do
+        if o and o.Visible then
+            local p, s = o.AbsolutePosition, o.AbsoluteSize
+            out[#out + 1] = { p.X, p.Y, p.X + s.X, p.Y + s.Y }
+        end
+    end
+    return out
+end
+
+-- a screen point that is not covered by this hub's own window / bubble
+function Util.freeClickPoint()
+    local vp = UI.viewport()
+    local rects = UI.rects()
+    for _ = 1, 12 do
+        local x = vp.X * Util.rand(0.3, 0.7)
+        local y = vp.Y * Util.rand(0.25, 0.6)
+        local free = true
+        for _, r in ipairs(rects) do
+            if x >= r[1] - 12 and x <= r[3] + 12 and y >= r[2] - 12 and y <= r[4] + 12 then
+                free = false
+                break
+            end
+        end
+        if free then return x, y end
+    end
+    return vp.X * 0.5, vp.Y * 0.4
 end
 
 ----------------------------------------------------------------------
@@ -1506,9 +1532,6 @@ function Mobs.alive()
             if not e.npc then k.npc = false end
         end
     end
-    for base, info in pairs(Mobs.known) do
-        if now - (info.seen or 0) > 90 then Mobs.known[base] = nil end
-    end
     Mobs.cache, Mobs.cacheT = out, now
     return out
 end
@@ -1528,40 +1551,6 @@ function Mobs.names()
     end)
     for _, n in ipairs(arr) do out[#out + 1] = n end
     return out
-end
-
-local BOSS_WORDS = { "boss", "raid", "emperor", "overlord", "king", "queen", "lord", "world boss" }
-function Mobs.isBoss(e)
-    if not e then return false end
-    local name = tostring(e.base or e.model.Name):lower()
-    for _, word in ipairs(BOSS_WORDS) do
-        if name:find(word, 1, true) then return true end
-    end
-    return false
-end
-
-function Boss.list()
-    local list = {}
-    local root = Util.root()
-    for _, e in ipairs(Mobs.alive()) do
-        if Mobs.isBoss(e) then
-            local distance = root and (e.root.Position - root.Position).Magnitude or math.huge
-            list[#list + 1] = { entry = e, distance = distance }
-        end
-    end
-    table.sort(list, function(a, b) return a.distance < b.distance end)
-    return list
-end
-
-function Boss.summary()
-    local rows = Boss.list()
-    if #rows == 0 then return "No boss-like enemy discovered in the streamed area." end
-    local out = { "Boss-like enemies currently visible: " .. #rows }
-    for i = 1, math.min(#rows, 10) do
-        local e = rows[i].entry
-        out[#out + 1] = string.format("%s | HP %.0f/%.0f | %.0f studs", e.base, e.hum.Health, e.hum.MaxHealth, rows[i].distance)
-    end
-    return table.concat(out, "\n")
 end
 
 function Mobs.bestBaseForLevel()
@@ -1637,18 +1626,6 @@ Hub.track(Workspace.DescendantAdded:Connect(function(d)
     end
 end))
 
-Hub.track(Workspace.DescendantRemoving:Connect(function(d)
-    if d:IsA("ProximityPrompt") then Prompts.set[d] = nil end
-    if d:IsA("Humanoid") then
-        local model = d.Parent
-        if model then Mobs.set[model] = nil end
-        Mobs.cache = nil
-    elseif d:IsA("Model") then
-        Mobs.set[d] = nil
-        Mobs.cache = nil
-    end
-end))
-
 ----------------------------------------------------------------------
 -- mover: ONE place that moves the character (so loops never fight each other)
 ----------------------------------------------------------------------
@@ -1694,7 +1671,6 @@ end
 
 -- blocking, speed-limited travel (yields until arrival / timeout / cancelled)
 function Mover.travel(owner, goalCF, speed, timeout)
-    if Mover.owner and Mover.owner ~= owner then return false end
     Mover.owner = owner
     local it = { kind = "goto", goal = goalCF, speed = speed, owner = owner, done = false }
     Mover.intent = it
@@ -1748,46 +1724,18 @@ Hub.track(RunService.Heartbeat:Connect(function(dt)
     if not ok then Hub.err("mover", e) end
 end))
 
-function Noclip.apply(character)
-    if not character then return end
-    for _, part in ipairs(character:GetDescendants()) do
-        if part:IsA("BasePart") then
-            if Noclip.orig[part] == nil then Noclip.orig[part] = part.CanCollide end
-            if part.CanCollide then part.CanCollide = false end
-        end
-    end
-end
-
-function Noclip.restore()
-    for part, oldValue in pairs(Noclip.orig) do
-        if part and part.Parent then pcall(function() part.CanCollide = oldValue end) end
-        Noclip.orig[part] = nil
-    end
-end
-
-function SpeedControl.restore()
-    if SpeedControl.hum and SpeedControl.hum.Parent and SpeedControl.original ~= nil then
-        pcall(function() SpeedControl.hum.WalkSpeed = SpeedControl.original end)
-    end
-    SpeedControl.hum, SpeedControl.original = nil, nil
-end
-
 Hub.track(RunService.Stepped:Connect(function()
-    local active = Mover.intent ~= nil or S.Noclip
-    local character = LP.Character
-    if active and character then
-        Noclip.apply(character)
-    else
-        if next(Noclip.orig) then Noclip.restore() end
+    if not (Mover.intent or S.Noclip) then return end
+    local c = LP.Character
+    if not c then return end
+    for _, p in ipairs(c:GetDescendants()) do
+        if p:IsA("BasePart") and p.CanCollide then p.CanCollide = false end
     end
 end))
 
 Hub.track(LP.CharacterAdded:Connect(function()
-    if Mover.bv then pcall(function() Mover.bv:Destroy() end) end
     Mover.bv = nil
     Attack.watch = {}
-    Noclip.restore()
-    SpeedControl.restore()
 end))
 
 ----------------------------------------------------------------------
@@ -1856,9 +1804,9 @@ Hub.loop("equip", function()
 end)
 
 ----------------------------------------------------------------------
--- attack (mobile-safe: Tool activation or the game's own GUI signal only)
+-- attack (adaptive: tries several input methods and keeps the one that lowers mob health)
 ----------------------------------------------------------------------
-local METHOD_BY_NAME = { Tool = "tool", ["Game Button"] = "button" }
+local METHOD_BY_NAME = { Tool = "tool", Click = "click", Button = "button", VirtualUser = "vuser" }
 
 function Attack.findButton()
     if Attack.btn and Attack.btn.Parent and os.clock() - Attack.btnT < 4 then return Attack.btn end
@@ -1873,9 +1821,8 @@ function Attack.findButton()
         if d:IsA("GuiButton") and d.Visible then
             local nm = d.Name:lower()
             local tx = d:IsA("TextButton") and d.Text:lower() or ""
-            local exact = nm == "m1" or nm == "attack" or tx == "m1" or tx == "attack"
-            local likely = nm:find("attack", 1, true) or nm:find("punch", 1, true) or tx:find("attack", 1, true)
-            if (exact or likely) and Util.guiVisible(d) then
+            if (nm == "m1" or nm:find("attack", 1, true) or nm:find("punch", 1, true) or tx == "m1" or tx:find("attack", 1, true))
+                and Util.guiVisible(d) then
                 Attack.btn = d
                 break
             end
@@ -1884,43 +1831,38 @@ function Attack.findButton()
     return Attack.btn
 end
 
-function Attack.tryMethod(method)
-    if method == "tool" then
-        local tool = Equip.current()
-        if not tool then return false end
-        local ok = pcall(function() tool:Activate() end)
-        return ok
-    elseif method == "button" then
-        local button = Attack.findButton()
-        return button and Util.fireButton(button) or false
-    end
-    return false
-end
-
-function Attack.reset()
-    Attack.watch = {}
-    Attack.good = nil
-    Attack.btn = nil
-    Attack.btnT = 0
-    Attack.lastWarn = 0
-end
-
 function Attack.swing()
-    if S.AttackMethod ~= "Auto" then
-        return Attack.tryMethod(METHOD_BY_NAME[S.AttackMethod])
-    end
-
-    -- Try the method that most recently produced damage first, then fall back.
-    local order = {}
-    if Attack.good then order[#order + 1] = Attack.good end
-    for _, method in ipairs(Attack.methods) do
-        if method ~= Attack.good then order[#order + 1] = method end
-    end
-    for _, method in ipairs(order) do
-        if Attack.tryMethod(method) then
-            Attack.idx = table.find(Attack.methods, method) or 1
-            return true, method
+    local m
+    if S.AttackMethod == "Auto" then m = Attack.methods[Attack.idx] else m = METHOD_BY_NAME[S.AttackMethod] end
+    if m == "tool" then
+        local t = Equip.current()
+        if t then
+            t:Activate()
+            return true
         end
+        return false
+    elseif m == "click" then
+        if not VIM then return false end
+        local x, y = Util.freeClickPoint()
+        pcall(function() VIM:SendMouseButtonEvent(x, y, 0, true, game, 0) end)
+        task.wait(Util.rand(0.02, 0.05))
+        pcall(function() VIM:SendMouseButtonEvent(x, y, 0, false, game, 0) end)
+        return true
+    elseif m == "button" then
+        local b = Attack.findButton()
+        if b then return Util.fireButton(b) end
+        return false
+    elseif m == "vuser" then
+        if not VirtualUser then return false end
+        local cam = Workspace.CurrentCamera
+        local cf = cam and cam.CFrame or CFrame.new()
+        pcall(function()
+            VirtualUser:CaptureController()
+            VirtualUser:Button1Down(Vector2.new(0, 0), cf)
+        end)
+        task.wait(Util.rand(0.02, 0.05))
+        pcall(function() VirtualUser:Button1Up(Vector2.new(0, 0), cf) end)
+        return true
     end
     return false
 end
@@ -1933,34 +1875,31 @@ function Attack.step(t)
         w.n = 0
         w.total = 0
     end
-    local ok, method = Attack.swing()
+    local ok = Attack.swing()
     if not ok then
-        w.n = (w.n or 0) + 1
-        if os.clock() - Attack.lastWarn > 10 then
-            Attack.lastWarn = os.clock()
-            Hub.note("attack-unavailable", "No supported attack action found. Equip a Tool or check whether the game exposes an M1 GUI button.", "bad")
-        end
+        if S.AttackMethod == "Auto" then Attack.idx = Attack.idx % #Attack.methods + 1 end
+        w.n = w.n + 1
         return false
     end
-    w.n = (w.n or 0) + 1
-    w.total = (w.total or 0) + 1
+    w.n = w.n + 1
+    w.total = w.total + 1
     local hp = t.hum.Health
     if hp < w.hp - 0.001 then
         w.hp = hp
         w.n = 0
         w.total = 0
-        Attack.good = method or Attack.methods[Attack.idx]
+        Attack.good = Attack.methods[Attack.idx]
     elseif w.n >= 10 then
         w.n = 0
         if S.AttackMethod == "Auto" then
-            Attack.good = (Attack.good == "tool") and "button" or "tool"
-            Hub.note("attack", "No damage detected. Checking the other supported attack method.")
+            Attack.idx = Attack.idx % #Attack.methods + 1
+            Hub.note("attack", "No damage yet - trying attack method: " .. Attack.methods[Attack.idx])
         end
     end
     if Farm.spot and w.total >= 20 then
         Farm.spotOff = os.clock() + 40
         Farm.spot = nil
-        Hub.note("bring", "Bring Mobs paused: no damage was detected after repeated attempts.", "bad")
+        Hub.note("bring", "Bring Mobs paused 40s: the server is not accepting moved mobs.", "bad")
     end
     if w.total >= 45 then
         Mobs.blacklist(t, 25)
@@ -2077,43 +2016,6 @@ local SKILLS = {
     { "SkillV", Enum.KeyCode.V }, { "SkillG", Enum.KeyCode.G },
 }
 
-local SkillInput = { cache = {}, cacheT = {} }
-function SkillInput.findButton(key)
-    local now = os.clock()
-    local cached = SkillInput.cache[key]
-    if cached and cached.Parent and now - (SkillInput.cacheT[key] or 0) < 3 then return cached end
-    SkillInput.cacheT[key] = now
-    SkillInput.cache[key] = nil
-    local pg = LP:FindFirstChild("PlayerGui")
-    if not pg then return nil end
-    local wanted = tostring(key):lower()
-    for _, d in ipairs(pg:GetDescendants()) do
-        if d:IsA("GuiButton") and Util.guiVisible(d) then
-            local name = d.Name:lower():gsub("[^%w]", "")
-            local text = d:IsA("TextButton") and d.Text:lower():gsub("[^%w]", "") or ""
-            local matches = name == wanted or name == "skill" .. wanted or name == wanted .. "skill"
-                or text == wanted or text == "skill" .. wanted or text == wanted .. "skill"
-            if matches then
-                SkillInput.cache[key] = d
-                return d
-            end
-        end
-    end
-    return nil
-end
-
-function SkillInput.activate(keyCode)
-    if UIS.TouchEnabled then
-        local button = SkillInput.findButton(keyCode.Name)
-        if not button then
-            Hub.note("skill-mobile-" .. keyCode.Name, "Mobile skill " .. keyCode.Name .. " button was not found. This game may not expose a tappable skill control.", "bad")
-            return false
-        end
-        return Util.fireButton(button)
-    end
-    return Util.pressKey(keyCode)
-end
-
 Hub.loop("skills", function()
     if Hub.paused or not Util.alive() then return 0.4 end
     local any = false
@@ -2128,7 +2030,7 @@ Hub.loop("skills", function()
     if not t or (t.root.Position - root.Position).Magnitude > reach then return 0.3 end
     for _, s in ipairs(SKILLS) do
         if S[s[1]] and Hub.alive then
-            SkillInput.activate(s[2])
+            Util.pressKey(s[2])
             task.wait(Util.rand(0.15, 0.32))
         end
     end
@@ -2139,21 +2041,18 @@ end)
 -- bring mobs / hitbox / reach
 ----------------------------------------------------------------------
 function Bring.pull(e, anchor)
-    local r, h = e.root, e.hum
-    if not Bring.orig[e.model] then
-        Bring.orig[e.model] = {
-            cframe = r.CFrame, canCollide = r.CanCollide,
-            walkSpeed = h.WalkSpeed, jumpPower = h.JumpPower,
-            platformStand = h.PlatformStand,
-        }
-    end
+    local r = e.root
     r.CFrame = CFrame.new(anchor + e.off)
     r.AssemblyLinearVelocity = ZERO
     r.AssemblyAngularVelocity = ZERO
     r.CanCollide = false
-    h.WalkSpeed = 0
-    h.JumpPower = 0
-    h.PlatformStand = true
+    local h = e.hum
+    if not e.pulled then
+        e.pulled = true
+        h.WalkSpeed = 0
+        h.JumpPower = 0
+        h.PlatformStand = true
+    end
     local now = os.clock()
     if now - (e.psT or 0) > 0.6 then
         e.psT = now
@@ -2161,38 +2060,8 @@ function Bring.pull(e, anchor)
     end
 end
 
-function Bring.restoreAll()
-    for model, original in pairs(Bring.orig) do
-        if model and model.Parent then
-            local hum = model:FindFirstChildOfClass("Humanoid")
-            local root = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
-            if root and root.Parent then
-                pcall(function()
-                    root.CFrame = original.cframe
-                    root.CanCollide = original.canCollide
-                end)
-            end
-            if hum and hum.Parent then
-                pcall(function()
-                    hum.WalkSpeed = original.walkSpeed
-                    hum.JumpPower = original.jumpPower
-                    hum.PlatformStand = original.platformStand
-                end)
-            end
-        end
-        Bring.orig[model] = nil
-    end
-end
-
 Hub.loop("bring", function()
-    if not S.BringMobs or Hub.paused or not Util.alive() then
-        if next(Bring.orig) then Bring.restoreAll() end
-        return 0.3
-    end
-    if not X.isowner then
-        Hub.note("bring-owner", "Bring Mobs is idle: this executor cannot confirm NPC network ownership.", "bad")
-        return 1
-    end
+    if not S.BringMobs or Hub.paused or not Util.alive() then return 0.3 end
     if not Farm.spot and Farm.target and S.AutoFarm and os.clock() < Farm.spotOff then return 0.3 end
     local root = Util.root()
     local anchor = Farm.spot
@@ -2210,6 +2079,14 @@ Hub.loop("bring", function()
         end
     end
     return 0.06
+end)
+
+Hub.loop("simradius", function()
+    if S.BringMobs or S.Hitbox then
+        if X.shp then pcall(X.shp, LP, "SimulationRadius", 1e9) end
+        pcall(function() LP.MaximumSimulationRadius = 1e9 end)
+    end
+    return 1.5
 end)
 
 function Hitbox.apply(e)
@@ -2321,26 +2198,6 @@ function Quest.scan()
     return list
 end
 
-function Quest.requiredLevel(candidate)
-    local p = candidate and candidate.prompt
-    local text = table.concat({
-        candidate and candidate.label or "",
-        candidate and candidate.name or "",
-        p and p.ActionText or "",
-        p and p.ObjectText or "",
-    }, " "):lower()
-    local patterns = {
-        "required%s+level[%s:%-]*(%d+)", "req%.?%s*level[%s:%-]*(%d+)",
-        "level[%s:%-]*(%d+)", "lvl[%s%.:%-]*(%d+)",
-        "nível[%s:%-]*(%d+)", "nivel[%s:%-]*(%d+)",
-    }
-    for _, pattern in ipairs(patterns) do
-        local value = text:match(pattern)
-        if value then return tonumber(value) end
-    end
-    return nil
-end
-
 function Quest.labels()
     local out = { AUTO_QUEST }
     local arr = {}
@@ -2366,23 +2223,15 @@ function Quest.pick()
             if c.label == S.QuestNPC then return c end
         end
     end
-    local playerLevel = Util.playerLevel()
     local ref = Farm.refPos()
-    local best, bestScore = nil, -math.huge
+    local best, bs = nil, -math.huge
     for _, c in ipairs(list) do
         if c.score >= 1 and c.hasModel then
-            local required = Quest.requiredLevel(c)
-            local eligible = not required or not playerLevel or required <= playerLevel
-            if eligible then
-                local distance = ref and (c.pos - ref).Magnitude or 0
-                local levelScore = (required and playerLevel) and (required / math.max(playerLevel, 1)) * 250 or 0
-                local score = c.score * 1000 + levelScore - distance
-                if score > bestScore then best, bestScore = c, score end
-            end
+            local d = ref and (c.pos - ref).Magnitude or 0
+            local s = c.score * 1000 - d
+            if s > bs then best, bs = c, s end
         end
     end
-    -- If the labels expose no usable requirement data, the best nearby
-    -- quest-like prompt remains the fallback rather than inventing a level map.
     return best
 end
 
@@ -2498,11 +2347,8 @@ function Quest.run()
     local c = Quest.pick()
     Quest.last = os.clock()
     if not c then
-        -- Retry soon after entering a newly streamed island instead of waiting
-        -- the entire normal quest interval after a failed discovery pass.
-        Quest.last = os.clock() - math.max(0, S.QuestInterval - 8)
-        Quest.info = "No quest NPC found in the streamed area. Move closer or rescan; retrying soon."
-        Hub.note("noquest", "Auto Quest: no quest NPC found in the streamed area. Moving closer or rescanning may help.", "bad")
+        Quest.info = "No quest NPC found nearby. Walk to an island and press Scan."
+        Hub.note("noquest", "Auto Quest: no quest NPC found. Use Scan Quest NPCs.", "bad")
         return false
     end
     local root = Util.root()
@@ -2526,19 +2372,6 @@ function Quest.run()
     Quest.info = string.format("Talked to %s, pressed %d dialog button(s).", c.name, n)
     return true
 end
-
-Hub.loop("quest-standalone", function()
-    -- Auto Quest can run by itself. When Auto Farm is active, its scheduler
-    -- remains the single owner of quest hand-offs to avoid competing loops.
-    if not S.AutoQuest or S.AutoFarm or Hub.paused then return 0.4 end
-    if not Util.alive() then
-        Mover.release("quest")
-        return 0.6
-    end
-    if Mover.owner and Mover.owner ~= "quest" then return 0.2 end
-    if Quest.due() then Quest.run() end
-    return 0.25
-end)
 
 ----------------------------------------------------------------------
 -- map points (islands / spawns / NPCs / players) + safe teleport
@@ -2628,27 +2461,6 @@ function POI.players()
     return out
 end
 
-Hub.loop("auto-scanner", function()
-    if not S.AutoScan then return 5 end
-    -- New streamed descendants are registered by DescendantAdded. These
-    -- refreshes only rebuild cached summaries; they do not rescan the map.
-    Mobs.alive()
-    Quest.scan()
-    return 6
-end)
-
-Hub.loop("boss-radar", function()
-    if not S.BossRadar or Hub.paused then return 3 end
-    for _, item in ipairs(Boss.list()) do
-        local model = item.entry.model
-        if not Boss.notified[model] then
-            Boss.notified[model] = true
-            Hub.note("boss:" .. tostring(model), "Boss radar: " .. item.entry.base .. " detected.", "force")
-        end
-    end
-    return 3
-end)
-
 function Hub.stopAutomation(why)
     local stopped = false
     for _, k in ipairs({ "AutoFarm", "AutoQuest" }) do
@@ -2703,7 +2515,7 @@ end
 -- misc
 ----------------------------------------------------------------------
 Hub.track(LP.Idled:Connect(function()
-    if not S.AntiAFK or not VirtualUser or UIS.TouchEnabled then return end
+    if not S.AntiAFK or not VirtualUser then return end
     pcall(function()
         VirtualUser:CaptureController()
         VirtualUser:ClickButton2(Vector2.new(0, 0))
@@ -2711,19 +2523,9 @@ Hub.track(LP.Idled:Connect(function()
 end))
 
 Hub.loop("walkspeed", function()
-    if not S.WalkSpeedOn or Hub.paused then
-        SpeedControl.restore()
-        return 0.5
-    end
+    if not S.WalkSpeedOn or Hub.paused then return 0.5 end
     local h = Util.hum()
-    if h then
-        if SpeedControl.hum ~= h then
-            SpeedControl.restore()
-            SpeedControl.hum = h
-            SpeedControl.original = h.WalkSpeed
-        end
-        h.WalkSpeed = Util.clamp(S.WalkSpeed, 8, Limits.walk())
-    end
+    if h then h.WalkSpeed = Util.clamp(S.WalkSpeed, 8, Limits.walk()) end
     return 0.25
 end)
 
@@ -2834,22 +2636,42 @@ Hub.track(GuiService.ErrorMessageChanged:Connect(function(msg)
     end
 end))
 
--- Manual pause: enabled modules idle until the player resumes automation.
-function Hub.pause(reason)
-    Hub.paused = true
-    Hub.pauseReason = reason or "Manual pause"
-    Hub.status = "Paused: " .. Hub.pauseReason
-    Mover.release()
-    Hub.note("pause", "Automation paused. Resume when ready.", "force")
+-- staff alert: if someone with a high rank in the game's owner group is in the server, pause automation
+local STAFF_RANK = 200
+function Hub.checkStaff(p)
+    if not S.PauseOnStaff or p == LP then return end
+    if game.CreatorType ~= Enum.CreatorType.Group then return end
+    task.spawn(function()
+        local ok, rank = pcall(function() return p:GetRankInGroup(game.CreatorId) end)
+        if ok and type(rank) == "number" and rank >= STAFF_RANK and Hub.alive then
+            Hub.staff[p] = true
+            Hub.paused = true
+            Hub.pauseReason = p.Name .. " (group rank " .. string.format("%.0f", rank) .. ")"
+            Hub.status = "PAUSED - staff in server: " .. p.Name
+            Hub.note("staff", "Possible staff in server (" .. p.Name .. "). Automation paused.", "bad")
+        end
+    end)
 end
 
 function Hub.resume()
     Hub.paused = false
     Hub.pauseReason = ""
     Hub.status = "Idle"
+    for p in pairs(Hub.staff) do Hub.staff[p] = nil end
 end
 
------------------------------------------------------------------------
+Hub.track(Players.PlayerAdded:Connect(Hub.checkStaff))
+Hub.track(Players.PlayerRemoving:Connect(function(p)
+    if Hub.staff[p] then
+        Hub.staff[p] = nil
+        if next(Hub.staff) == nil and Hub.paused then
+            Hub.resume()
+            Hub.note("staff", "Staff left. Automation resumed.", "ok")
+        end
+    end
+end))
+
+----------------------------------------------------------------------
 -- scanner report
 ----------------------------------------------------------------------
 function Scan.capabilities()
@@ -2860,71 +2682,74 @@ function Scan.capabilities()
         if ok then ex = tostring(a) .. (b and (" " .. tostring(b)) or "") end
     end
     return string.format(
-        "Executor: %s\nfiles %s | asset %s | prompt %s | signal %s | connections %s | touch %s | VIM keys %s",
+        "Executor: %s\nfiles %s | asset %s | prompt %s | signal %s | connections %s | netowner %s | VIM %s | VUser %s",
         ex, yn(X.writefile and X.readfile), yn(X.getasset), yn(X.fireprompt), yn(X.firesignal),
-        yn(X.getconns), yn(UIS.TouchEnabled), yn(VIM))
-end
-
-function Scan.full()
-    Mobs.scanAll()
-    Quest.scan()
-    POI.scan()
-    Scan.lastFull = os.clock()
-    return true
+        yn(X.getconns), yn(X.isowner), yn(VIM), yn(VirtualUser))
 end
 
 function Scan.report()
     local lines = {}
-    local function add(value) lines[#lines + 1] = value end
-    local gameName = "?"
-    pcall(function() gameName = MarketplaceService:GetProductInfo(game.PlaceId).Name end)
-    add("MILLIE HUB v" .. CFG.VERSION .. " PREMIUM scan")
-    add("Game: " .. tostring(gameName) .. " (place " .. tostring(game.PlaceId) .. ")")
+    local function add(s) lines[#lines + 1] = s end
+    local gname = "?"
+    pcall(function() gname = MarketplaceService:GetProductInfo(game.PlaceId).Name end)
+    add("MILLIE HUB v" .. CFG.VERSION .. " scan")
+    add("Game: " .. tostring(gname) .. "  (place " .. tostring(game.PlaceId) .. ")")
     add(Scan.capabilities())
     add("Player level guess: " .. tostring(Util.playerLevel() or "not found"))
     local alive = Mobs.alive()
-    local knownCount = 0
-    for _ in pairs(Mobs.known) do knownCount = knownCount + 1 end
-    add("Visible enemies: " .. #alive .. " | known enemy types: " .. knownCount)
-    local knownRows = {}
-    for base, info in pairs(Mobs.known) do
-        knownRows[#knownRows + 1] = string.format("  %s%s%s", base,
-            info.level and (" [lv " .. string.format("%.0f", info.level) .. "]") or "",
-            info.npc and " (npc-like)" or "")
+    add("Mobs alive in memory: " .. #alive .. "   known types: " .. (function()
+        local c = 0
+        for _ in pairs(Mobs.known) do c = c + 1 end
+        return c
+    end)())
+    local rows = {}
+    for base, k in pairs(Mobs.known) do
+        rows[#rows + 1] = string.format("  %s%s%s", base, k.level and (" [lv " .. string.format("%.0f", k.level) .. "]") or "", k.npc and " (npc-like)" or "")
     end
-    table.sort(knownRows)
-    for i = 1, math.min(#knownRows, 18) do add(knownRows[i]) end
+    table.sort(rows)
+    for i = 1, math.min(#rows, 14) do add(rows[i]) end
     local root = Util.root()
     if root then
-        local nearby = {}
-        for _, entry in ipairs(alive) do
-            nearby[#nearby + 1] = { entry = entry, distance = (entry.root.Position - root.Position).Magnitude }
-        end
-        table.sort(nearby, function(a, b) return a.distance < b.distance end)
-        add("Nearest enemies:")
-        for i = 1, math.min(#nearby, 6) do
-            local entry = nearby[i].entry
-            add(string.format("  %s | %.0f studs | HP %.0f", entry.base, nearby[i].distance, entry.hum.Health))
+        local near = {}
+        for _, e in ipairs(alive) do near[#near + 1] = { e = e, d = (e.root.Position - root.Position).Magnitude } end
+        table.sort(near, function(a, b) return a.d < b.d end)
+        add("Nearest mobs:")
+        for i = 1, math.min(#near, 5) do
+            add(string.format("  %s  %.0f studs  hp %.0f", near[i].e.base, near[i].d, near[i].e.hum.Health))
         end
     end
-    add("Quest candidates: " .. #Quest.prompts .. " | tracker: " .. tostring(Quest.progV))
-    for i, candidate in ipairs(Quest.prompts) do
-        if candidate.score >= 1 and i <= 10 then
-            add("  " .. candidate.label .. " | requirement: " .. tostring(Quest.requiredLevel(candidate) or "unknown"))
+    add("Quest NPC candidates: " .. #Quest.prompts .. "   (progress tracker: " .. Quest.progV .. ")")
+    local shown = 0
+    for _, c in ipairs(Quest.prompts) do
+        if c.score >= 1 and shown < 8 then
+            shown = shown + 1
+            add("  " .. c.label .. "  score " .. c.score)
         end
     end
-    local attackButton = Attack.findButton()
-    add("Attack GUI button: " .. (attackButton and attackButton:GetFullName() or "not found"))
-    add("Attack method: " .. tostring(S.AttackMethod) .. " | last damage method: " .. tostring(Attack.good or "not tested"))
+    local b = Attack.findButton()
+    add("Attack button found: " .. (b and b:GetFullName() or "no") .. "   method now: " .. Attack.methods[Attack.idx] .. "   last good: " .. tostring(Attack.good))
     add("Tools: " .. table.concat(Equip.tools(), ", "))
-    add("Island/spawn entries: " .. #POI.islands .. " | NPC entries: " .. #POI.npcs)
-    add("Boss-like enemies: " .. #Boss.list())
-    add("Scanner note: only streamed/client-visible instances can be discovered; no server-wide map is exposed here.")
-    local errors = {}
-    for key, value in pairs(Hub.errors) do errors[#errors + 1] = key .. ": " .. value end
-    table.sort(errors)
-    add("Module errors: " .. (#errors == 0 and "none" or ""))
-    for _, value in ipairs(errors) do add("  " .. value) end
+    local rem = {}
+    pcall(function()
+        for _, d in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
+            if d:IsA("RemoteEvent") or d:IsA("RemoteFunction") then
+                local l = d.Name:lower()
+                for _, w in ipairs({ "quest", "combat", "attack", "m1", "hit", "damage", "skill", "equip", "weapon" }) do
+                    if l:find(w, 1, true) then
+                        rem[#rem + 1] = d.Name
+                        break
+                    end
+                end
+            end
+            if #rem >= 20 then break end
+        end
+    end)
+    add("Interesting remotes (" .. #rem .. "): " .. table.concat(rem, ", "))
+    local errs = {}
+    for k, v in pairs(Hub.errors) do errs[#errs + 1] = k .. ": " .. v end
+    table.sort(errs)
+    add("Module errors: " .. (#errs == 0 and "none" or ""))
+    for _, e in ipairs(errs) do add("  " .. e) end
     return table.concat(lines, "\n")
 end
 
@@ -2962,12 +2787,6 @@ function Cfg.load()
         local v = data[k]
         if v ~= nil and type(v) == type(S[k]) then S[k] = v end
     end
-    -- Migrate method names from v2.1. Mouse/VUser attack modes no longer exist.
-    if S.AttackMethod == "Button" then
-        S.AttackMethod = "Game Button"
-    elseif S.AttackMethod ~= "Auto" and S.AttackMethod ~= "Tool" and S.AttackMethod ~= "Game Button" then
-        S.AttackMethod = "Auto"
-    end
     return true
 end
 
@@ -2979,23 +2798,22 @@ Hub.loop("saver", function()
     return 1
 end)
 
+Hub.loop("staffscan", function()
+    for _, p in ipairs(Players:GetPlayers()) do Hub.checkStaff(p) end
+    return 45
+end)
+
 ----------------------------------------------------------------------
 -- shutdown / panic
 ----------------------------------------------------------------------
 function Hub.disableAll()
-    Hub.paused = false
-    Hub.pauseReason = ""
-    for _, k in ipairs({ "AutoFarm", "AutoQuest", "AutoPrestige", "BringMobs", "Hitbox", "Reach", "AutoLoot", "Noclip", "WalkSpeedOn", "AutoAttack", "BossRadar" }) do
+    for _, k in ipairs({ "AutoFarm", "AutoQuest", "AutoPrestige", "BringMobs", "Hitbox", "Reach", "AutoLoot", "Noclip", "WalkSpeedOn", "AutoAttack" }) do
         S[k] = false
         if UI.toggles[k] then pcall(UI.toggles[k].Set, false, true) end
     end
     for _, k in ipairs({ "SkillZ", "SkillX", "SkillC", "SkillV", "SkillG" }) do S[k] = false end
     pcall(Hitbox.restoreAll)
     pcall(Reach.restore)
-    pcall(Bring.restoreAll)
-    pcall(Noclip.restore)
-    pcall(SpeedControl.restore)
-    pcall(Attack.reset)
     Mover.release()
 end
 
@@ -3004,10 +2822,6 @@ function Hub.Destroy()
     Hub.alive = false
     pcall(Hitbox.restoreAll)
     pcall(Reach.restore)
-    pcall(Bring.restoreAll)
-    pcall(Noclip.restore)
-    pcall(SpeedControl.restore)
-    pcall(Attack.reset)
     pcall(Misc.render3d, false)
     pcall(Mover.release)
     for _, c in ipairs(Hub.conns) do
@@ -3127,8 +2941,22 @@ function Prestige.tryAutoConfirm()
     if key == Prestige.lastAutoKey and os.clock() - Prestige.lastAutoAt < 20 then return end
     Prestige.lastAutoKey, Prestige.lastAutoAt = key, os.clock()
 
-    -- Use the same signal-only activation as the other UI modules.
-    local fired = Util.fireButton(b)
+    -- Fire only the button's existing UI signals. No remote discovery or mouse emulation.
+    local fired = false
+    if X.getconns then
+        for _, sigName in ipairs({ "Activated", "MouseButton1Click" }) do
+            local ok, conns = pcall(function() return X.getconns(b[sigName]) end)
+            if ok and type(conns) == "table" then
+                for _, c in ipairs(conns) do
+                    if pcall(function() c:Fire() end) then fired = true end
+                end
+            end
+        end
+    end
+    if not fired and X.firesignal then
+        local ok = pcall(function() X.firesignal(b.Activated) end)
+        fired = ok
+    end
     if fired then
         Prestige.status = "Prestige confirmation sent. Waiting for the game to update..."
         Hub.note("prestige", Prestige.status, "ok")
@@ -3148,53 +2976,6 @@ end)
 -- pages
 ---------------------------------------------------------------------
 function UI.buildPages()
-    -------------------------------------------------------------- HOME
-    local home = UI.addTab("Home")
-    home:Section("Millie Hub Premium")
-    home:Paragraph("Welcome to Millie Hub 3.0. Discovery follows streamed NPCs and prompts automatically; the refresh switch controls lightweight summary updates. A full scan only covers what the client has loaded.", T.text)
-    local homeInfo = home:Paragraph("Starting dashboard...", T.muted)
-    home:Toggle("Automatic scan refresh", "AutoScan")
-    home:Button("Full scan current streamed area", function()
-        task.spawn(function()
-            homeInfo.Set("Scanning current client-visible area...")
-            local ok, err = pcall(Scan.full)
-            if ok then
-                homeInfo.Set("Scan complete.\n" .. Scan.report())
-                Hub.note("fullscan", "Millie scan completed.", "ok")
-            else
-                Hub.err("fullscan", err)
-                Hub.note("fullscan", "Scan failed. See Scanner tab.", "bad")
-            end
-        end)
-    end, true)
-    home:Button("Emergency stop automations", function()
-        Hub.disableAll()
-        Hub.note("emergency", "Automations stopped and local changes restored.", "ok")
-    end)
-    local homeLast = 0
-    UI.hook(function()
-        if not UI.tabs[UI.current] or UI.tabs[UI.current].name ~= "Home" then return end
-        if os.clock() - homeLast < 1 then return end
-        homeLast = os.clock()
-        local level = Util.playerLevel()
-        local root = Util.root()
-        local health = Util.hum()
-        local mobs = #Mobs.alive()
-        local bosses = #Boss.list()
-        local lines = {
-            "Status: " .. tostring(Hub.status),
-            "Level: " .. tostring(level or "not detected"),
-            "Health: " .. (health and string.format("%.0f / %.0f", health.Health, health.MaxHealth) or "not spawned"),
-            "Visible enemies: " .. mobs .. " | boss-like: " .. bosses,
-            "Quest NPC candidates: " .. #Quest.prompts,
-            "Islands/spawns cached: " .. #POI.islands,
-            "Device: " .. (UIS.TouchEnabled and "Touch / mobile" or "Mouse / keyboard"),
-            "Movement owner: " .. tostring(Mover.owner or "none"),
-        }
-        if Hub.paused then lines[#lines + 1] = "Paused: " .. tostring(Hub.pauseReason) end
-        homeInfo.Set(table.concat(lines, "\n"))
-    end)
-
     --------------------------------------------------------- PRESTIGE
     local pr = UI.addTab("Prestige")
     pr:Section("Prestige Overseer")
@@ -3220,7 +3001,7 @@ function UI.buildPages()
         else Hub.note("legacy-island", "Legacy Island was not found. Use Rescan map in Teleport first.", "bad") end
     end, true)
     UI.hook(function()
-        if prestigeInfo and UI.tabs[UI.current] and UI.tabs[UI.current].name == "Prestige" then
+        if prestigeInfo and UI.current == 1 then
             local lines = { Prestige.status, "Rank: " .. Prestige.rank }
             if Prestige.level and Prestige.levelNeed then
                 lines[#lines + 1] = string.format("Level: %d / %d", Prestige.level, Prestige.levelNeed)
@@ -3247,7 +3028,6 @@ function UI.buildPages()
             Hub.status = "Idle"
         end
     end)
-    p:Paragraph("Auto (by level) selects the highest enemy level detected at or below your level + 3. If the game hides NPC levels, it falls back to the nearest visible enemy.")
     p:Dropdown("Target Mob", "TargetMob", Mobs.names, function()
         Farm.target = nil
         Farm.spot = nil
@@ -3257,14 +3037,11 @@ function UI.buildPages()
     p:Slider("Travel Speed", "TravelSpeed", 60, 260, 5, " st/s")
 
     p:Section("Combat")
-    p:Toggle("Auto Attack", "AutoAttack", function(on)
-        if not on then Attack.reset() end
-    end)
-    p:Paragraph("Mobile-safe mode: no global mouse clicks or held touch input. Auto uses Tool activation, then the game's visible attack-button signal. If the game exposes neither, use its native M1 control manually.")
+    p:Toggle("Auto Attack", "AutoAttack")
     p:Dropdown("Attack Method", "AttackMethod", function()
-        return { "Auto", "Tool", "Game Button" }
-    end, function() Attack.reset() end)
-    p:Slider("Attack Speed", "CPS", 1, 14, 1, " attempts/s")
+        return { "Auto", "Tool", "Click", "Button", "VirtualUser" }
+    end, function() Attack.watch = {} end)
+    p:Slider("Attack Speed", "CPS", 1, 14, 1, " cps")
     p:Chips("Auto Skills", {
         { label = "Z", key = "SkillZ" }, { label = "X", key = "SkillX" }, { label = "C", key = "SkillC" },
         { label = "V", key = "SkillV" }, { label = "G", key = "SkillG" },
@@ -3272,11 +3049,8 @@ function UI.buildPages()
     p:Slider("Skill Delay", "SkillDelay", 0.5, 6, 0.1, " s")
 
     p:Section("Mob Control")
-    p:Toggle("Bring Mobs (client-owned NPCs)", "BringMobs", function(on)
-        if not on then
-            Farm.spot = nil
-            Bring.restoreAll()
-        end
+    p:Toggle("Bring Mobs", "BringMobs", function(on)
+        if not on then Farm.spot = nil end
     end)
     p:Slider("Bring Radius", "BringRadius", 20, 200, 5, " st")
     p:Toggle("Hitbox Expander", "Hitbox", function(on)
@@ -3301,11 +3075,11 @@ function UI.buildPages()
     ---------------------------------------------------------- QUESTS
     local q = UI.addTab("Quests")
     q:Section("Auto Quest")
-    q:Paragraph("Finds quest NPC prompts, prefers requirements that do not exceed your detected level when the prompt exposes a level, travels to the NPC and activates accept-style dialog buttons. It watches the visible quest tracker and repeats when complete. Auto Quest now runs on its own or alongside Auto Farm; if level requirements are hidden, selection falls back to the best nearby quest-like prompt.")
+    q:Paragraph("Finds quest NPCs (prompts called quest / mission / bounty / task), glides to the one closest to the mobs you farm, talks to it and presses accept-style buttons. It watches the quest tracker and repeats when the quest is done. Runs together with Auto Farm.")
     q:Toggle("Auto Quest", "AutoQuest", function(on)
         if on then
             Quest.first = true
-            Hub.note("quest2", "Auto Quest enabled. It can run independently or alongside Auto Farm.", "force")
+            if not S.AutoFarm then Hub.note("quest2", "Auto Quest works while Auto Farm is on.", "force") end
         else
             Mover.release("quest")
         end
@@ -3329,40 +3103,13 @@ function UI.buildPages()
         end)
     end, true)
     UI.hook(function()
-        if qinfo and UI.tabs[UI.current] and UI.tabs[UI.current].name == "Quests" then qinfo.Set(Quest.info) end
-    end)
-
-    ---------------------------------------------------------- BOSSES
-    local bossPage = UI.addTab("Bosses")
-    bossPage:Section("Boss Radar")
-    bossPage:Paragraph("Heuristic detection based on visible NPC names (Boss, Raid, Emperor, King, Lord, etc.). This is a radar, not a guaranteed game database; unusual boss names may be missed and ordinary names may be flagged.")
-    local bossInfo = bossPage:Paragraph(Boss.summary())
-    bossPage:Toggle("Enable boss spawn alerts", "BossRadar")
-    bossPage:Button("Refresh boss list", function()
-        Mobs.alive()
-        bossInfo.Set(Boss.summary())
-    end, true)
-    bossPage:Button("Target nearest discovered boss", function()
-        local item = Boss.list()[1]
-        if not item then
-            Hub.note("boss-target", "No boss-like enemy is visible right now.", "bad")
-            return
-        end
-        S.TargetMob = item.entry.base
-        if UI.dropdowns.TargetMob then UI.dropdowns.TargetMob.Set(item.entry.base) end
-        Farm.target = nil
-        Hub.note("boss-target", "Farm target set to " .. item.entry.base .. ".", "ok")
-    end)
-    UI.hook(function()
-        if UI.tabs[UI.current] and UI.tabs[UI.current].name == "Bosses" then
-            bossInfo.Set(Boss.summary())
-        end
+        if qinfo and UI.current == 2 then qinfo.Set(Quest.info) end
     end)
 
     -------------------------------------------------------- TELEPORT
     local t = UI.addTab("Teleport")
-    t:Section("Glide teleport")
-    t:Paragraph("Moves toward the selected destination at the configured local speed and temporarily disables character collisions. Server movement validation, obstacles and streamed map limits can still interrupt travel. Auto Farm / Quest switch off while you travel.")
+    t:Section("Safe teleport")
+    t:Paragraph("Glides you there at a capped speed with noclip, then drops you on the ground. No instant snapping, so the server does not drag you back. Auto Farm / Quest switch off while you travel.")
     t:Button("Rescan map (islands, NPCs)", function()
         task.spawn(function()
             Quest.scan()
@@ -3403,19 +3150,15 @@ function UI.buildPages()
     ----------------------------------------------------------- MISC
     local m = UI.addTab("Misc")
     m:Section("Safety")
-    m:Toggle("Conservative limits (not anti-ban)", "SafeMode")
-    m:Button("Pause automations", function()
-        Hub.pause("Manual pause")
-    end)
+    m:Toggle("Safe Mode (human-like limits)", "SafeMode")
+    m:Toggle("Pause when staff joins", "PauseOnStaff")
     m:Button("Resume automation", function()
         Hub.resume()
         Hub.note("resume", "Automation resumed.", "ok")
     end)
     m:Section("Utility")
     m:Toggle("Anti-AFK", "AntiAFK")
-    m:Toggle("Noclip", "Noclip", function(on)
-        if not on then Noclip.restore() end
-    end)
+    m:Toggle("Noclip", "Noclip")
     m:Toggle("Walk Speed", "WalkSpeedOn", function(on)
         if not on then
             local h = Util.hum()
@@ -3438,12 +3181,13 @@ function UI.buildPages()
     ------------------------------------------------------- SCANNER
     local sc = UI.addTab("Scanner")
     sc:Section("What the hub sees")
-    local rep = sc:Paragraph("Scanner is event-driven after the initial scan. It can only inspect instances streamed to this client; it cannot reveal unloaded islands or server-only objects. Reports include visible mobs, quest prompts, tools, bosses and module errors.")
+    local rep = sc:Paragraph("Press Scan now: it lists mobs, quest NPCs, tools, the attack button and the last error of every module. If something does not work, copy this report.")
     local lastReport = ""
     sc:Button("Scan now", function()
         task.spawn(function()
             rep.Set("Scanning...")
-            Scan.full()
+            Quest.scan()
+            POI.scan()
             lastReport = Scan.report()
             rep.Set(lastReport)
         end)
@@ -3492,7 +3236,7 @@ function UI.buildPages()
     st:Section("Danger zone")
     st:Button("PANIC: stop everything and unload", function() Hub.panic() end)
     st:Button("Unload hub", function() Hub.Destroy() end)
-    st:Paragraph("Millie Hub v" .. CFG.VERSION .. " Premium | Legacy Piece edition. Conservative limits only cap local settings; they do not prevent enforcement. Game updates can change NPC names, UI prompts and tool behavior.")
+    st:Paragraph("Millie Hub v" .. CFG.VERSION .. "  -  Legacy Piece edition. Not ban-proof: use an alt account and keep Safe Mode on.")
 end
 
 
@@ -3502,7 +3246,7 @@ end
 function UI.runEntry(onUnlocked)
     local gui = UI.gui
     local WELCOME = "Bem-vindo a MILLIE HUB HEH!...~"
-    local SUB = "Legacy Piece edition  |  v3.0 Premium"
+    local SUB = "Legacy Piece edition  |  mobile"
 
     local overlay = mk("Frame", {
         Name = "Entry", Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = T.white, BorderSizePixel = 0,
@@ -3712,7 +3456,9 @@ end)
 task.spawn(function()
     task.wait(1)
     stage("scan", function()
-        Scan.full()
+        Mobs.scanAll()
+        Quest.scan()
+        POI.scan()
     end)
 end)
 task.spawn(function()
@@ -3728,100 +3474,31 @@ end)
 
 ENV.__MILLIE_HUB = Hub
 
--- Visible startup diagnostics: Delta's console may be unavailable/blank, so
--- never rely on print/warn as the only way to report a startup failure.
-local function showStartupFallback(reason)
-    local ok, err = pcall(function()
-        local parent = Hub.guiParent()
-        local old = parent:FindFirstChild("MillieStartupDiagnostic")
-        if old then old:Destroy() end
-
-        local screen = Instance.new("ScreenGui")
-        screen.Name = "MillieStartupDiagnostic"
-        screen.ResetOnSpawn = false
-        screen.IgnoreGuiInset = true
-        screen.DisplayOrder = 100000
-        screen.Parent = parent
-
-        local frame = Instance.new("Frame")
-        frame.Name = "Panel"
-        frame.AnchorPoint = Vector2.new(0.5, 0.5)
-        frame.Position = UDim2.new(0.5, 0, 0.5, 0)
-        frame.Size = UDim2.new(0.9, 0, 0, 220)
-        frame.BackgroundColor3 = Color3.fromRGB(30, 8, 13)
-        frame.BorderSizePixel = 0
-        frame.Parent = screen
-        Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 14)
-
-        local title = Instance.new("TextLabel")
-        title.BackgroundTransparency = 1
-        title.Position = UDim2.new(0, 14, 0, 10)
-        title.Size = UDim2.new(1, -28, 0, 30)
-        title.Font = Enum.Font.GothamBold
-        title.TextSize = 18
-        title.TextXAlignment = Enum.TextXAlignment.Left
-        title.TextColor3 = Color3.fromRGB(255, 205, 40)
-        title.Text = "MILLIE HUB 3.0.1 - STARTUP DIAGNOSTIC"
-        title.Parent = frame
-
-        local detail = Instance.new("TextLabel")
-        detail.BackgroundTransparency = 1
-        detail.Position = UDim2.new(0, 14, 0, 46)
-        detail.Size = UDim2.new(1, -28, 0, 116)
-        detail.Font = Enum.Font.Gotham
-        detail.TextSize = 12
-        detail.TextWrapped = true
-        detail.TextYAlignment = Enum.TextYAlignment.Top
-        detail.TextXAlignment = Enum.TextXAlignment.Left
-        detail.TextColor3 = Color3.fromRGB(255, 230, 220)
-        detail.Text = tostring(reason or "Unknown startup error")
-        detail.Parent = frame
-
-        local close = Instance.new("TextButton")
-        close.Position = UDim2.new(0, 14, 1, -42)
-        close.Size = UDim2.new(1, -28, 0, 30)
-        close.BackgroundColor3 = Color3.fromRGB(150, 20, 34)
-        close.TextColor3 = Color3.new(1, 1, 1)
-        close.Font = Enum.Font.GothamBold
-        close.TextSize = 14
-        close.Text = "CLOSE DIAGNOSTIC"
-        close.Parent = frame
-        Instance.new("UICorner", close).CornerRadius = UDim.new(0, 8)
-        close.Activated:Connect(function() screen:Destroy() end)
-    end)
-    if not ok then
-        pcall(function() warn("[MillieHub startup fallback failed] " .. tostring(err)) end)
-    end
-end
-
-local entryOk, entryErr = false, nil
 if builtOk then
-    entryOk, entryErr = stage("entry", function()
-        UI.runEntry(function()
-            UI.showBubble(true)
-            UI.setOpen(true)
-            Hub.note("welcome", "Welcome, babe~  Tap the jv bubble to hide / show the hub.", "ok")
-        end)
+    UI.runEntry(function()
+        UI.showBubble(true)
+        UI.setOpen(true)
+        Hub.note("welcome", "Welcome, babe~  Tap the jv bubble to hide / show the hub.", "ok")
     end)
+else
+    warn("[MillieHub] the interface could not be built; check Hub.errors via the executor console.")
 end
+Util.rand(2.4, 5.5)
+end)
 
-if not builtOk then
-    local parts = {}
-    for tag, message in pairs(Hub.errors) do
-        parts[#parts + 1] = tag .. ": " .. tostring(message)
-    end
-    showStartupFallback("Main interface construction failed. " .. table.concat(parts, "\\n"))
-elseif not entryOk then
-    showStartupFallback("The main interface was created, but the welcome/password screen failed. " .. tostring(entryErr or Hub.errors["start:entry"] or "No additional error was returned."))
-end
- close).CornerRadius = UDim.new(0, 8)
-        close.Activated:Connect(function() screen:Destroy() end)
+-- learn the world in the background (mobs, prompts, islands) and name the game in the header
+task.spawn(function()
+    task.wait(1)
+    stage("scan", function()
+        Mobs.scanAll()
+        Quest.scan()
+        POI.scan()
     end)
-    if not ok then
-        pcall(function() warn("[MillieHub startup fallback failed] " .. tostring(err)) end)
-    end
-end
-
-local entryOk, entryErr = false, nil
-if builtOk then
-    entryOk, entryErr = stage("en
+end)
+task.spawn(function()
+    local ok, name = pcall(function() return MarketplaceService:GetProductInfo(game.PlaceId).Name end)
+    if ok and type(name) == "string" and UI.subtitle then
+        if name:lower():find("legacy", 1, true) then
+            UI.subtitle.Text = "Legacy Piece  |  v" .. CFG.VERSION
+        else
+            UI.su
