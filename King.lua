@@ -18,7 +18,7 @@
       not a hard-coded Legacy Piece database. The Scanner tab
       shows what was found and the last error of every module.
 ]]
-
+task.wait(2)
 local CFG = {
     KEY = "Millielover",
     VERSION = "3.0",
