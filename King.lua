@@ -18,7 +18,7 @@
       not a hard-coded Legacy Piece database. The Scanner tab
       shows what was found and the last error of every module.
 ]]
-task.wait(2)
+
 local CFG = {
     KEY = "Millielover",
     VERSION = "3.0",
@@ -3728,26 +3728,100 @@ end)
 
 ENV.__MILLIE_HUB = Hub
 
-if builtOk then
-    UI.runEntry(function()
-        UI.showBubble(true)
-        UI.setOpen(true)
-        Hub.note("welcome", "Welcome, babe~  Tap the jv bubble to hide / show the hub.", "ok")
-    end)
-else
-    warn("[MillieHub] the interface could not be built; check Hub.errors via the executor console.")
-end
-(UI.faces) do f.blink.t = 0 end
-    return Util.rand(2.4, 5.5)
-end)
+-- Visible startup diagnostics: Delta's console may be unavailable/blank, so
+-- never rely on print/warn as the only way to report a startup failure.
+local function showStartupFallback(reason)
+    local ok, err = pcall(function()
+        local parent = Hub.guiParent()
+        local old = parent:FindFirstChild("MillieStartupDiagnostic")
+        if old then old:Destroy() end
 
--- learn the world in the background (mobs, prompts, islands) and name the game in the header
-task.spawn(function()
-    task.wait(1)
-    stage("scan", function()
-        Scan.full()
+        local screen = Instance.new("ScreenGui")
+        screen.Name = "MillieStartupDiagnostic"
+        screen.ResetOnSpawn = false
+        screen.IgnoreGuiInset = true
+        screen.DisplayOrder = 100000
+        screen.Parent = parent
+
+        local frame = Instance.new("Frame")
+        frame.Name = "Panel"
+        frame.AnchorPoint = Vector2.new(0.5, 0.5)
+        frame.Position = UDim2.new(0.5, 0, 0.5, 0)
+        frame.Size = UDim2.new(0.9, 0, 0, 220)
+        frame.BackgroundColor3 = Color3.fromRGB(30, 8, 13)
+        frame.BorderSizePixel = 0
+        frame.Parent = screen
+        Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 14)
+
+        local title = Instance.new("TextLabel")
+        title.BackgroundTransparency = 1
+        title.Position = UDim2.new(0, 14, 0, 10)
+        title.Size = UDim2.new(1, -28, 0, 30)
+        title.Font = Enum.Font.GothamBold
+        title.TextSize = 18
+        title.TextXAlignment = Enum.TextXAlignment.Left
+        title.TextColor3 = Color3.fromRGB(255, 205, 40)
+        title.Text = "MILLIE HUB 3.0.1 - STARTUP DIAGNOSTIC"
+        title.Parent = frame
+
+        local detail = Instance.new("TextLabel")
+        detail.BackgroundTransparency = 1
+        detail.Position = UDim2.new(0, 14, 0, 46)
+        detail.Size = UDim2.new(1, -28, 0, 116)
+        detail.Font = Enum.Font.Gotham
+        detail.TextSize = 12
+        detail.TextWrapped = true
+        detail.TextYAlignment = Enum.TextYAlignment.Top
+        detail.TextXAlignment = Enum.TextXAlignment.Left
+        detail.TextColor3 = Color3.fromRGB(255, 230, 220)
+        detail.Text = tostring(reason or "Unknown startup error")
+        detail.Parent = frame
+
+        local close = Instance.new("TextButton")
+        close.Position = UDim2.new(0, 14, 1, -42)
+        close.Size = UDim2.new(1, -28, 0, 30)
+        close.BackgroundColor3 = Color3.fromRGB(150, 20, 34)
+        close.TextColor3 = Color3.new(1, 1, 1)
+        close.Font = Enum.Font.GothamBold
+        close.TextSize = 14
+        close.Text = "CLOSE DIAGNOSTIC"
+        close.Parent = frame
+        Instance.new("UICorner", close).CornerRadius = UDim.new(0, 8)
+        close.Activated:Connect(function() screen:Destroy() end)
     end)
-end)
-task.spawn(function()
-    local ok, name = pcall(function() return MarketplaceService:GetProductInfo(game.PlaceId).Name end)
-    if ok and type(name) == "string" and UI.su
+    if not ok then
+        pcall(function() warn("[MillieHub startup fallback failed] " .. tostring(err)) end)
+    end
+end
+
+local entryOk, entryErr = false, nil
+if builtOk then
+    entryOk, entryErr = stage("entry", function()
+        UI.runEntry(function()
+            UI.showBubble(true)
+            UI.setOpen(true)
+            Hub.note("welcome", "Welcome, babe~  Tap the jv bubble to hide / show the hub.", "ok")
+        end)
+    end)
+end
+
+if not builtOk then
+    local parts = {}
+    for tag, message in pairs(Hub.errors) do
+        parts[#parts + 1] = tag .. ": " .. tostring(message)
+    end
+    showStartupFallback("Main interface construction failed. " .. table.concat(parts, "\\n"))
+elseif not entryOk then
+    showStartupFallback("The main interface was created, but the welcome/password screen failed. " .. tostring(entryErr or Hub.errors["start:entry"] or "No additional error was returned."))
+end
+ close).CornerRadius = UDim.new(0, 8)
+        close.Activated:Connect(function() screen:Destroy() end)
+    end)
+    if not ok then
+        pcall(function() warn("[MillieHub startup fallback failed] " .. tostring(err)) end)
+    end
+end
+
+local entryOk, entryErr = false, nil
+if builtOk then
+    entryOk, entryErr = stage("en
