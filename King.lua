@@ -1,5 +1,5 @@
 --[[
-    MILLIE HUB  -  "Millie lazy"  v2.1   (Legacy Piece edition)
+    MILLIE HUB  -  "Millie lazy"  v2.0   (Legacy Piece edition)
     Built for mobile executors (Delta). One file, no external dependencies.
 
     Password ............ Millielover
@@ -18,7 +18,7 @@
 
 local CFG = {
     KEY = "Millielover",
-    VERSION = "2.1",
+    VERSION = "3.0",
     FOLDER = "MillieHub",
     MILLIE_IMAGE_URL = "", -- optional direct png/jpg link (overrides the embedded art)
 }
@@ -78,30 +78,35 @@ local AUTO_QUEST = "Auto (best match)"
 
 local S = {
     -- farm
-    AutoFarm = false, TargetMob = AUTO_NEAREST, FarmPos = "Above", FarmDist = 9, TravelSpeed = 140,
+    AutoFarm = false, TargetMob = AUTO_NEAREST, FarmPos = "Behind", FarmDist = 4, TravelSpeed = 70, MoveMode = "Auto",
     AutoAttack = false, AttackMethod = "Auto", CPS = 6,
     SkillZ = false, SkillX = false, SkillC = false, SkillV = false, SkillG = false, SkillDelay = 1.6,
     BringMobs = false, BringRadius = 90, Hitbox = false, HitboxSize = 25, Reach = false, ReachSize = 16,
     AutoEquip = true, Weapon = AUTO_TOOL, EquipMode = "Tool", HotbarSlot = 1,
     -- quests
     AutoQuest = false, QuestNPC = AUTO_QUEST, QuestInterval = 90,
-    AutoPrestige = false,
     -- misc
     AntiAFK = true, Noclip = false, WalkSpeedOn = false, WalkSpeed = 26, AutoLoot = false, LootRadius = 40,
     FPSBoost = false, Disable3D = false, AutoRejoin = false, InstantTP = false,
     TPIsland = "(pick one)", TPNPC = "(pick one)", TPPlayer = "(pick one)",
     -- safety
     SafeMode = true, PauseOnStaff = true, Notify = true,
+    -- goals
+    AutoPrestige = false, PrestigeLevel = 0, PrestigeRank = 0, PrestigeEvery = 8,
+    AutoBoss = false, BossSel = "Any boss", BossIsland = true,
+    ItemSel = "Auto-Katana", ItemRun = false, ItemAttempts = 25,
+    SpyOn = false, SpyQuiet = true, MacroName = "", MacroSel = "(none)",
     -- ui
     UIScale = 1, MillieURL = "",
 }
 
 -- settings that are remembered between sessions (running toggles are NOT saved on purpose)
 local PERSIST = {
-    "TargetMob", "FarmPos", "FarmDist", "TravelSpeed", "AttackMethod", "CPS", "SkillDelay",
+    "TargetMob", "FarmPos", "FarmDist", "TravelSpeed", "MoveMode", "AttackMethod", "CPS", "SkillDelay",
     "BringRadius", "HitboxSize", "ReachSize", "AutoEquip", "Weapon", "EquipMode", "HotbarSlot",
     "QuestInterval", "AntiAFK", "WalkSpeed", "LootRadius", "SafeMode", "PauseOnStaff", "Notify",
-    "UIScale", "MillieURL",
+    "UIScale", "MillieURL", "PrestigeRank", "PrestigeLevel", "PrestigeEvery", "BossSel", "BossIsland",
+    "ItemSel", "ItemAttempts", "SpyQuiet", "MacroName",
 }
 
 -- Safe Mode caps (applied wherever a value is used)
@@ -204,6 +209,7 @@ end
 function Util.guiVisible(obj)
     local p = obj
     while p do
+        if p == Hub.gui then return false end
         if p:IsA("GuiObject") then
             if not p.Visible then return false end
         elseif p:IsA("ScreenGui") then
@@ -254,6 +260,22 @@ function Util.groundY(pos)
     return nil
 end
 
+function Util.tapGui(btn)
+    if not VIM then return false end
+    local inset = 0
+    local sg = btn:FindFirstAncestorOfClass("ScreenGui")
+    if sg and sg.IgnoreGuiInset == false then
+        local okI, tl = pcall(function() return GuiService:GetGuiInset() end)
+        if okI and tl then inset = tl.Y end
+    end
+    local p, s = btn.AbsolutePosition, btn.AbsoluteSize
+    local x, y = p.X + s.X / 2, p.Y + s.Y / 2 + inset
+    pcall(function() VIM:SendMouseButtonEvent(x, y, 0, true, game, 0) end)
+    task.wait(0.05)
+    pcall(function() VIM:SendMouseButtonEvent(x, y, 0, false, game, 0) end)
+    return true
+end
+
 function Util.fireButton(btn)
     if X.getconns then
         for _, sigName in ipairs({ "Activated", "MouseButton1Click", "MouseButton1Down" }) do
@@ -268,29 +290,15 @@ function Util.fireButton(btn)
             end
         end
     end
+    local sig = false
     if X.firesignal then
         local a = pcall(function() X.firesignal(btn.Activated) end)
         local b = pcall(function() X.firesignal(btn.MouseButton1Click) end)
-        if a or b then return true end
+        sig = a or b
     end
-    -- last resort: a real tap on the button
-    if VIM then
-        local ok = pcall(function()
-            local inset = 0
-            local sg = btn:FindFirstAncestorOfClass("ScreenGui")
-            if sg and sg.IgnoreGuiInset == false then
-                local okI, tl = pcall(function() return GuiService:GetGuiInset() end)
-                if okI and tl then inset = tl.Y end
-            end
-            local p, s = btn.AbsolutePosition, btn.AbsoluteSize
-            local x, y = p.X + s.X / 2, p.Y + s.Y / 2 + inset
-            VIM:SendMouseButtonEvent(x, y, 0, true, game, 0)
-            task.wait(0.05)
-            VIM:SendMouseButtonEvent(x, y, 0, false, game, 0)
-        end)
-        return ok
-    end
-    return false
+    -- no listener we could trigger directly: tap the button like a finger would
+    if VIM and Util.tapGui(btn) then return true end
+    return sig
 end
 
 function Util.firePrompt(prompt)
@@ -1057,7 +1065,7 @@ end
 function UI.addTab(name)
     local idx = #UI.tabs + 1
     local btn = mk("TextButton", {
-        Size = UDim2.new(1, -6, 0, 30), LayoutOrder = idx, BackgroundColor3 = T.panel2,
+        Size = UDim2.new(1, -6, 0, 26), LayoutOrder = idx, BackgroundColor3 = T.panel2,
         BackgroundTransparency = 1, Text = "", AutoButtonColor = false, BorderSizePixel = 0,
     }, UI.sidebar)
     UI.corner(btn, 8)
@@ -1206,11 +1214,11 @@ function UI.build()
 
     -- sidebar
     UI.sidebar = mk("ScrollingFrame", {
-        Position = UDim2.new(0, 8, 0, 50), Size = UDim2.new(0, 100, 1, -58), BackgroundTransparency = 1,
+        Position = UDim2.new(0, 8, 0, 48), Size = UDim2.new(0, 100, 1, -54), BackgroundTransparency = 1,
         BorderSizePixel = 0, ScrollBarThickness = 0, CanvasSize = UDim2.new(0, 0, 0, 0),
         AutomaticCanvasSize = Enum.AutomaticSize.Y, ZIndex = 2,
     }, body)
-    mk("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, UI.sidebar)
+    mk("UIListLayout", { Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder }, UI.sidebar)
 
     -- pages + status bar
     UI.pagesHolder = mk("Frame", {
@@ -1349,6 +1357,7 @@ local Hitbox = { orig = setmetatable({}, { __mode = "k" }) }
 local Reach = { orig = setmetatable({}, { __mode = "k" }) }
 local Bring = {}
 local Cfg = {}
+local DB, Spy, Items, Boss, Prestige = {}, {}, {}, {}, {}
 
 local KEYS = {
     Enum.KeyCode.One, Enum.KeyCode.Two, Enum.KeyCode.Three, Enum.KeyCode.Four, Enum.KeyCode.Five,
@@ -1424,7 +1433,7 @@ function Util.playerLevel()
         local ca = c:GetAttribute("Level")
         if type(ca) == "number" then return ca end
     end
-    return nil
+    return Util.guiLevel()
 end
 
 ----------------------------------------------------------------------
@@ -1569,6 +1578,17 @@ function Mobs.pick()
     local root = Util.root()
     if not root then return nil end
     local p = root.Position
+    local w = Mobs.want
+    if w then
+        local wb, wd = nil, math.huge
+        for _, e in ipairs(Mobs.alive()) do
+            if Util.nameMatchAny(e.model.Name, w.patterns) or Util.nameMatchAny(e.base, w.patterns) then
+                local d = (e.root.Position - p).Magnitude
+                if d < wd then wb, wd = e, d end
+            end
+        end
+        if wb or w.exclusive then return wb end
+    end
     local sel = S.TargetMob
     local want = nil
     if sel == AUTO_LEVEL then want = Mobs.bestBaseForLevel() end
@@ -1627,22 +1647,45 @@ Hub.track(Workspace.DescendantAdded:Connect(function(d)
 end))
 
 ----------------------------------------------------------------------
--- mover: ONE place that moves the character (so loops never fight each other)
+-- mover: ONE place that moves the character (so loops never fight each other).
+-- Glide = capped-speed CFrame steps. If the server pulls us back, the hub slows
+-- down by itself and finally falls back to real walking (Humanoid:MoveTo).
 ----------------------------------------------------------------------
-function Mover.hold(on)
-    local root = Util.root()
-    if on and root then
-        if not Mover.bv or Mover.bv.Parent ~= root then
-            if Mover.bv then pcall(function() Mover.bv:Destroy() end) end
-            local bv = Instance.new("BodyVelocity")
-            bv.Name = rname(8)
-            bv.MaxForce = Vector3.new(1e9, 1e9, 1e9)
-            bv.Velocity = ZERO
-            bv.P = 12500
-            bv.Parent = root
-            Mover.bv = bv
-        end
-    elseif Mover.bv then
+local MIN_SPEED = 16
+
+function Mover.reset()
+    Mover.scale = 1
+    Mover.mode = "glide"
+    Mover.floorHits = 0
+    Mover.rollbacks = 0
+    Mover.lastDrop = 0
+    Mover.lastEvent = "none"
+    Mover.lastRB = os.clock()
+    Mover.lastUp = 0
+    Mover.lastPos = nil
+    Mover.glided = false
+end
+Mover.reset()
+
+function Mover.walking()
+    return S.MoveMode == "Walk" or (S.MoveMode == "Auto" and Mover.mode == "walk")
+end
+
+function Mover.speed(it)
+    local base = math.min((it and it.speed) or S.TravelSpeed, Limits.speed())
+    local v = base * Mover.scale
+    if v < MIN_SPEED then v = math.min(MIN_SPEED, base) end
+    return v
+end
+
+function Mover.describe()
+    if Mover.walking() then return "walking" end
+    return string.format("gliding %.0f st/s", Mover.speed(nil))
+end
+
+-- kept for compatibility: BodyMovers are easy for games to detect, so none are used any more
+function Mover.hold()
+    if Mover.bv then
         pcall(function() Mover.bv:Destroy() end)
         Mover.bv = nil
     end
@@ -1650,9 +1693,15 @@ end
 
 function Mover.release(owner)
     if owner == nil or Mover.owner == owner then
+        local had = Mover.intent ~= nil
         Mover.intent = nil
         Mover.owner = nil
-        Mover.hold(false)
+        Mover.lastPos = nil
+        Mover.glided = false
+        if had and Mover.walking() then
+            local h, r = Util.hum(), Util.root()
+            if h and r then pcall(function() h:MoveTo(r.Position) end) end
+        end
     end
 end
 
@@ -1669,41 +1718,110 @@ function Mover.follow(owner, goalFn, speed)
     return Mover.intent
 end
 
--- blocking, speed-limited travel (yields until arrival / timeout / cancelled)
+-- blocking travel (yields until arrival / timeout / cancelled)
 function Mover.travel(owner, goalCF, speed, timeout)
     Mover.owner = owner
     local it = { kind = "goto", goal = goalCF, speed = speed, owner = owner, done = false }
     Mover.intent = it
+    if not timeout then
+        local r = Util.root()
+        local d = r and (goalCF.Position - r.Position).Magnitude or 100
+        timeout = d / MIN_SPEED * 1.5 + 20
+    end
     local t0 = os.clock()
     while Hub.alive and not it.done and Mover.intent == it do
-        if os.clock() - t0 > (timeout or 60) then break end
+        if os.clock() - t0 > timeout then break end
         task.wait(0.05)
     end
     local arrived = it.done
-    if Mover.intent == it then
-        Mover.intent = nil
-        Mover.owner = nil
-        Mover.hold(false)
-    end
+    if Mover.intent == it then Mover.release(owner) end
     return arrived
+end
+
+-- the server (or the game) moved us when we did not ask for it, or we are not getting anywhere
+function Mover.onRollback(kind, amount)
+    local now = os.clock()
+    Mover.rollbacks = Mover.rollbacks + 1
+    Mover.lastRB = now
+    Mover.lastEvent = string.format("%s %.0f studs at t=%.0f", kind, amount or 0, now)
+    if now - Mover.lastDrop < 1.0 or Mover.walking() then return end
+    Mover.lastDrop = now
+    if Mover.speed(nil) > MIN_SPEED + 0.5 then
+        Mover.scale = math.max(Mover.scale * 0.55, 0.05)
+        Hub.note("rb", string.format("Server pulled you back: slowing down to %.0f st/s", Mover.speed(nil)), "bad")
+    else
+        Mover.floorHits = Mover.floorHits + 1
+        if Mover.floorHits >= 2 and S.MoveMode == "Auto" then
+            Mover.mode = "walk"
+            Hub.note("rb2", "Still pulled back at minimum speed: switching to real walking.", "bad")
+        end
+    end
 end
 
 function Mover.step(dt)
     local it = Mover.intent
-    if not it then return end
+    if not it then
+        Mover.lastPos = nil
+        return
+    end
     local root, hum = Util.root(), Util.hum()
-    if not root or not hum or hum.Health <= 0 then return end
+    if not root or not hum or hum.Health <= 0 then
+        Mover.lastPos = nil
+        return
+    end
+    local now = os.clock()
+    local pos = root.Position
+    if Mover.glided and Mover.lastPos then
+        local err = (pos - Mover.lastPos).Magnitude
+        if err > 7 then Mover.onRollback("snap", err) end
+    end
     local goal
     if it.kind == "goto" then goal = it.goal else goal = it.goalFn and it.goalFn() end
-    Mover.hold(true)
+    if not goal then
+        Mover.lastPos = nil
+        return
+    end
+    local gpos = goal.Position
+    local dist = (gpos - pos).Magnitude
+    it.dist = dist
+    local walking = Mover.walking()
+    -- slowly give the speed back after a quiet while (self-heals from a false alarm)
+    if not walking and Mover.scale < 1 and now - Mover.lastRB > 30 and now - Mover.lastUp > 10 then
+        Mover.lastUp = now
+        Mover.scale = math.min(1, Mover.scale * 1.25)
+    end
+    -- progress watchdog (every 1.4s: did we get closer to the goal we had at the start of the window?)
+    if not it.win or now - it.win.t > 1.4 then
+        local w = it.win
+        if w and w.d > 8 and dist > 8 and (gpos - w.g).Magnitude < 6 then
+            local gained = w.d - (w.g - pos).Magnitude
+            local expect = w.v * (now - w.t)
+            if gained < expect * 0.25 then
+                it.stall = (it.stall or 0) + 1
+                Mover.onRollback("stall", expect - gained)
+            else
+                it.stall = 0
+            end
+        end
+        it.win = { t = now, d = dist, g = gpos, v = walking and math.max(hum.WalkSpeed, 8) or Mover.speed(it) }
+    end
+    if walking then
+        Mover.glided = false
+        Mover.lastPos = nil
+        if it.kind == "goto" and dist < 3.5 then it.done = true end
+        if now - (it.mt or 0) > 0.12 then
+            it.mt = now
+            pcall(function() hum:MoveTo(gpos) end)
+        end
+        if (it.stall or 0) >= 1 and now - (it.jt or 0) > 1.2 then
+            it.jt = now
+            pcall(function() hum.Jump = true end)
+        end
+        return
+    end
     root.AssemblyLinearVelocity = ZERO
     root.AssemblyAngularVelocity = ZERO
-    if not goal then return end
-    local cur = root.CFrame
-    local pos, gpos = cur.Position, goal.Position
-    local delta = gpos - pos
-    local dist = delta.Magnitude
-    local speed = math.min(it.speed or S.TravelSpeed, Limits.speed())
+    local speed = Mover.speed(it)
     local step
     if it.kind == "goto" then
         step = math.min(dist, speed * dt)
@@ -1711,11 +1829,13 @@ function Mover.step(dt)
         step = math.min(dist * (1 - math.exp(-(it.smooth or 12) * dt)), speed * dt)
     end
     local newPos = pos
-    if dist > 0.001 then newPos = pos + delta.Unit * step end
+    if dist > 0.001 then newPos = pos + (gpos - pos).Unit * step end
+    local cur = root.CFrame
     local a = 1 - math.exp(-14 * dt)
     local newRot = (cur - cur.Position):Lerp(goal - goal.Position, a)
     root.CFrame = CFrame.new(newPos) * newRot
-    it.dist = dist
+    Mover.lastPos = newPos
+    Mover.glided = true
     if it.kind == "goto" and dist < 1.5 then it.done = true end
 end
 
@@ -1725,9 +1845,14 @@ Hub.track(RunService.Heartbeat:Connect(function(dt)
 end))
 
 Hub.track(RunService.Stepped:Connect(function()
-    if not (Mover.intent or S.Noclip) then return end
+    local gliding = Mover.intent ~= nil and not Mover.walking()
+    if not (gliding or S.Noclip) then return end
     local c = LP.Character
     if not c then return end
+    if gliding then
+        local r = c:FindFirstChild("HumanoidRootPart")
+        if r then r.AssemblyLinearVelocity = ZERO end
+    end
     for _, p in ipairs(c:GetDescendants()) do
         if p:IsA("BasePart") and p.CanCollide then p.CanCollide = false end
     end
@@ -1806,7 +1931,36 @@ end)
 ----------------------------------------------------------------------
 -- attack (adaptive: tries several input methods and keeps the one that lowers mob health)
 ----------------------------------------------------------------------
-local METHOD_BY_NAME = { Tool = "tool", Click = "click", Button = "button", VirtualUser = "vuser" }
+Attack.methods = { "tool", "click", "touch", "button", "vuser" }
+Attack.stats = {}
+local METHOD_BY_NAME = { Tool = "tool", Click = "click", Touch = "touch", Button = "button", VirtualUser = "vuser" }
+local NAME_BY_METHOD = { tool = "Tool", click = "Click", touch = "Touch", button = "Button", vuser = "VirtualUser" }
+
+-- health of a mob (Humanoid, or an attribute / value some games use instead)
+function Mobs.hp(e)
+    if e.hpSrc == nil then
+        e.hpSrc = false
+        local m = e.model
+        if type(m:GetAttribute("Health")) == "number" then
+            e.hpSrc = { "attr", "Health" }
+        elseif type(m:GetAttribute("HP")) == "number" then
+            e.hpSrc = { "attr", "HP" }
+        else
+            local v = m:FindFirstChild("Health") or m:FindFirstChild("HP")
+            if v and v:IsA("ValueBase") and type(v.Value) == "number" then e.hpSrc = { "val", v } end
+        end
+    end
+    local s = e.hpSrc
+    if s then
+        if s[1] == "attr" then
+            local a = e.model:GetAttribute(s[2])
+            if type(a) == "number" then return a end
+        elseif s[2].Parent then
+            return s[2].Value
+        end
+    end
+    return e.hum.Health
+end
 
 function Attack.findButton()
     if Attack.btn and Attack.btn.Parent and os.clock() - Attack.btnT < 4 then return Attack.btn end
@@ -1831,9 +1985,20 @@ function Attack.findButton()
     return Attack.btn
 end
 
+-- turn towards the mob (rotation only, no position change)
+function Attack.face(t)
+    local root = Util.root()
+    if not root then return end
+    if Mover.intent and not Mover.walking() then return end
+    local tp = t.root.Position
+    local at = Vector3.new(tp.X, root.Position.Y, tp.Z)
+    if (at - root.Position).Magnitude < 0.5 then return end
+    root.CFrame = CFrame.lookAt(root.Position, at)
+end
+
 function Attack.swing()
     local m
-    if S.AttackMethod == "Auto" then m = Attack.methods[Attack.idx] else m = METHOD_BY_NAME[S.AttackMethod] end
+    if S.AttackMethod == "Auto" then m = Attack.methods[Attack.idx] else m = METHOD_BY_NAME[S.AttackMethod] or "tool" end
     if m == "tool" then
         local t = Equip.current()
         if t then
@@ -1848,10 +2013,19 @@ function Attack.swing()
         task.wait(Util.rand(0.02, 0.05))
         pcall(function() VIM:SendMouseButtonEvent(x, y, 0, false, game, 0) end)
         return true
+    elseif m == "touch" then
+        if not VIM then return false end
+        local x, y = Util.freeClickPoint()
+        local ok = pcall(function() VIM:SendTouchEvent(1, 0, x, y) end)
+        if not ok then return false end
+        task.wait(Util.rand(0.03, 0.07))
+        pcall(function() VIM:SendTouchEvent(1, 2, x, y) end)
+        return true
     elseif m == "button" then
         local b = Attack.findButton()
-        if b then return Util.fireButton(b) end
-        return false
+        if not b then return false end
+        if VIM then return Util.tapGui(b) end
+        return Util.fireButton(b)
     elseif m == "vuser" then
         if not VirtualUser then return false end
         local cam = Workspace.CurrentCamera
@@ -1871,24 +2045,31 @@ function Attack.step(t)
     local w = Attack.watch
     if w.target ~= t then
         w.target = t
-        w.hp = t.hum.Health
+        w.hp = Mobs.hp(t)
         w.n = 0
         w.total = 0
     end
-    local ok = Attack.swing()
-    if not ok then
+    Attack.face(t)
+    local m = (S.AttackMethod == "Auto") and Attack.methods[Attack.idx] or (METHOD_BY_NAME[S.AttackMethod] or "tool")
+    local st = Attack.stats[m]
+    if not st then
+        st = { tries = 0, hits = 0 }
+        Attack.stats[m] = st
+    end
+    if not Attack.swing() then
         if S.AttackMethod == "Auto" then Attack.idx = Attack.idx % #Attack.methods + 1 end
-        w.n = w.n + 1
         return false
     end
+    st.tries = st.tries + 1
     w.n = w.n + 1
     w.total = w.total + 1
-    local hp = t.hum.Health
+    local hp = Mobs.hp(t)
     if hp < w.hp - 0.001 then
+        st.hits = st.hits + 1
         w.hp = hp
         w.n = 0
         w.total = 0
-        Attack.good = Attack.methods[Attack.idx]
+        Attack.good = m
     elseif w.n >= 10 then
         w.n = 0
         if S.AttackMethod == "Auto" then
@@ -1901,13 +2082,70 @@ function Attack.step(t)
         Farm.spot = nil
         Hub.note("bring", "Bring Mobs paused 40s: the server is not accepting moved mobs.", "bad")
     end
-    if w.total >= 45 then
-        Mobs.blacklist(t, 25)
+    if w.total >= 60 then
         w.total = 0
-        w.target = nil
-        Hub.note("stuck", "Could not damage " .. t.base .. " - skipping it for 25s.", "bad")
+        if Attack.good then
+            Mobs.blacklist(t, 25)
+            w.target = nil
+            Hub.note("stuck", "Could not damage " .. t.base .. " - skipping it for 25s.", "bad")
+        else
+            Hub.note("noatk", "No attack method has damaged anything yet. Stand next to a mob, equip your weapon and press Test attack methods.", "bad")
+        end
     end
     return true
+end
+
+-- tries every input method on the nearest mob and reports which one really hurts it
+function Attack.test()
+    if not Util.alive() then return "You are not alive." end
+    local t = Mobs.nearestWithin(150)
+    if not t then return "No mob found within 150 studs. Walk near some mobs first." end
+    Hub.stopAutomation("attack test")
+    Attack.testing = true
+    local ok, res = pcall(function()
+        Equip.ensure()
+        task.wait(0.4)
+        local tp = t.root.Position
+        local stand = Vector3.new(tp.X, tp.Y, tp.Z - 4)
+        Mover.travel("test", CFrame.lookAt(stand, tp), S.TravelSpeed)
+        task.wait(0.4)
+        local results, first = {}, nil
+        local saved = S.AttackMethod
+        for _, m in ipairs(Attack.methods) do
+            if not Mobs.isAlive(t) then t = Mobs.nearestWithin(40) end
+            if not t then break end
+            S.AttackMethod = NAME_BY_METHOD[m]
+            local hp0, sent = Mobs.hp(t), 0
+            for _ = 1, 7 do
+                Attack.face(t)
+                if Attack.swing() then sent = sent + 1 end
+                task.wait(0.28)
+            end
+            task.wait(0.5)
+            local hit = (not Mobs.isAlive(t)) or Mobs.hp(t) < hp0 - 0.001
+            results[#results + 1] = m .. "=" .. (sent == 0 and "n/a" or (hit and "YES" or "no"))
+            if hit and sent > 0 and not first then first = m end
+        end
+        S.AttackMethod = saved
+        local summary = table.concat(results, "  ")
+        if first then
+            local nm = NAME_BY_METHOD[first]
+            if UI.dropdowns.AttackMethod then UI.dropdowns.AttackMethod.Set(nm) else S.AttackMethod = nm end
+            Attack.good = first
+            summary = summary .. "  ->  using " .. nm
+        else
+            summary = summary .. "  ->  none damaged the mob (equip your weapon, stand next to it, then send me the Scanner report)"
+        end
+        return summary
+    end)
+    Attack.testing = false
+    Mover.release("test")
+    if not ok then
+        Hub.err("attacktest", res)
+        return "Test failed: " .. tostring(res)
+    end
+    Attack.lastTest = res
+    return res
 end
 
 ----------------------------------------------------------------------
@@ -1922,16 +2160,18 @@ function Farm.goal()
     if flat.Magnitude < 0.05 then flat = Vector3.new(0, 0, -1) else flat = flat.Unit end
     local d = Util.clamp(S.FarmDist, 2, 45)
     local pos
-    if S.FarmPos == "Above" then
+    if Mover.walking() then
+        pos = tp - flat * math.min(d, 5)
+    elseif S.FarmPos == "Above" then
         pos = tp + Vector3.new(0, d, 0) - flat * 1.5
     elseif S.FarmPos == "Behind" then
-        pos = tp - flat * d + Vector3.new(0, 1.5, 0)
+        pos = tp - flat * d
     else
-        pos = tp + flat * d + Vector3.new(0, 1.5, 0)
+        pos = tp + flat * d
     end
-    if S.SafeMode then
+    if S.SafeMode and not Mover.walking() then
         local tt = os.clock()
-        pos = pos + Vector3.new(math.sin(tt * 1.7) * 0.4, math.sin(tt * 2.3) * 0.25, math.cos(tt * 1.3) * 0.4)
+        pos = pos + Vector3.new(math.sin(tt * 1.7) * 0.35, math.sin(tt * 2.3) * 0.2, math.cos(tt * 1.3) * 0.35)
     end
     return CFrame.lookAt(pos, tp)
 end
@@ -1964,6 +2204,10 @@ Hub.loop("farm", function()
         Mover.release("farm")
         return 0.5
     end
+    if Prestige.busy then
+        Mover.release("farm")
+        return 0.5
+    end
     if Mover.owner and Mover.owner ~= "farm" then return 0.2 end
     if S.AutoQuest and Quest.due() then
         Mover.release("farm")
@@ -1981,7 +2225,7 @@ Hub.loop("farm", function()
         local k = Mobs.known[S.TargetMob]
         if k and k.pos then
             Hub.status = "Heading to the " .. S.TargetMob .. " area..."
-            local home = k.pos + Vector3.new(0, 14, 0)
+            local home = k.pos + Vector3.new(0, 4, 0)
             Mover.follow("farm", function() return Util.cfAt(home) end, S.TravelSpeed)
             return 0.5
         end
@@ -1991,13 +2235,20 @@ Hub.loop("farm", function()
         return 0.8
     end
     Farm.updateSpot(t)
-    Hub.status = string.format("Farming %s  (%d alive)", t.base, #Mobs.alive())
+    Hub.status = string.format("Farming %s (%d alive) | %s", t.base, #Mobs.alive(), Mover.describe())
     Mover.follow("farm", Farm.goal, S.TravelSpeed)
+    local it = Mover.intent
+    if it and Mover.owner == "farm" and (it.stall or 0) >= 3 and Mover.walking() then
+        it.stall = 0
+        Mobs.blacklist(t, 20)
+        Farm.target = nil
+        Hub.note("unreach", "Cannot reach " .. t.base .. " (blocked) - trying another one.", "bad")
+    end
     return 0.05
 end)
 
 Hub.loop("attack", function()
-    if not S.AutoAttack or Hub.paused or not Util.alive() then return 0.25 end
+    if not S.AutoAttack or Hub.paused or Attack.testing or not Util.alive() then return 0.25 end
     local root = Util.root()
     local reach = S.FarmDist + 20 + (S.Hitbox and S.HitboxSize * 0.5 or 0)
     local t = Farm.target
@@ -2166,7 +2417,7 @@ end)
 -- quests (discover quest NPCs, walk there, interact, click accept-like buttons)
 ----------------------------------------------------------------------
 local QUEST_WORDS = { "quest", "mission", "bounty", "task", "assignment" }
-local GOOD_BTN = { "accept", "start", "begin", "continue", "next", "yes", "confirm", "claim", "complete", "finish", "okay", "agree", "take", "turn in", "ok" }
+local GOOD_BTN = { "accept", "start", "begin", "continue", "next", "yes", "confirm", "claim", "complete", "finish", "okay", "agree", "take", "turn in", "ok", "prestige", "ascend", "unlock" }
 local BAD_BTN = { "buy", "sell", "purchase", "reset", "shop", "close", "cancel", "decline", "exit", "leave", "reject", "no", "robux", "trade", "delete", "abandon" }
 
 function Quest.scan()
@@ -2198,18 +2449,37 @@ function Quest.scan()
     return list
 end
 
+local SHOP_WORDS = {
+    "shop", "merchant", "dealer", "trainer", "vendor", "seller", "banker", "blacksmith", "gacha", "prestige",
+    "reroll", "fisherman", "teacher", "tracker",
+}
+
+function Quest.isShop(name)
+    local l = name:lower()
+    for _, w in ipairs(SHOP_WORDS) do
+        if l:find(w, 1, true) then return true end
+    end
+    return false
+end
+
 function Quest.labels()
-    local out = { AUTO_QUEST }
+    local root = Util.root()
     local arr = {}
     for _, c in ipairs(Quest.prompts) do
-        if c.score >= 1 then arr[#arr + 1] = c.label end
+        if c.hasModel then
+            arr[#arr + 1] = { label = c.label, d = root and (c.pos - root.Position).Magnitude or 0, score = c.score }
+        end
     end
-    table.sort(arr)
-    local seen = {}
-    for _, l in ipairs(arr) do
-        if not seen[l] then
-            seen[l] = true
-            out[#out + 1] = l
+    table.sort(arr, function(a, b)
+        if a.score ~= b.score then return a.score > b.score end
+        return a.d < b.d
+    end)
+    local out, seen = { AUTO_QUEST }, {}
+    for _, a in ipairs(arr) do
+        if not seen[a.label] then
+            seen[a.label] = true
+            out[#out + 1] = a.label
+            if #out >= 40 then break end
         end
     end
     return out
@@ -2226,7 +2496,7 @@ function Quest.pick()
     local ref = Farm.refPos()
     local best, bs = nil, -math.huge
     for _, c in ipairs(list) do
-        if c.score >= 1 and c.hasModel then
+        if c.hasModel and (c.score >= 1 or not Quest.isShop(c.name)) then
             local d = ref and (c.pos - ref).Magnitude or 0
             local s = c.score * 1000 - d
             if s > bs then best, bs = c, s end
@@ -2235,19 +2505,25 @@ function Quest.pick()
     return best
 end
 
+function Quest.badText(t)
+    t = (t or ""):lower()
+    for _, w in ipairs(BAD_BTN) do
+        if t == w or t:find("%f[%a]" .. w .. "%f[%A]") then return true end
+    end
+    return false
+end
+
 function Quest.goodText(t)
     t = (t or ""):lower()
-    if t == "" then return false end
-    for _, w in ipairs(BAD_BTN) do
-        if t == w or t:find("%f[%a]" .. w .. "%f[%A]") then return false end
-    end
+    if t == "" or Quest.badText(t) then return false end
     for _, w in ipairs(GOOD_BTN) do
         if t:find(w, 1, true) then return true end
     end
     return false
 end
 
-function Quest.buttons()
+-- every visible button with a short, harmless label  ->  { button = text }
+function Quest.visible()
     local out = {}
     local pg = LP:FindFirstChild("PlayerGui")
     if not pg then return out end
@@ -2261,30 +2537,48 @@ function Quest.buttons()
                 local lbl = d:FindFirstChildWhichIsA("TextLabel", true)
                 tx = lbl and lbl.Text or ""
             end
-            if Quest.goodText(tx) and Util.guiVisible(d) then out[d] = true end
+            if tx ~= "" and #tx <= 28 and not Quest.badText(tx) and Util.guiVisible(d) then out[d] = tx end
         end
     end
     return out
 end
 
 function Quest.interact(c)
-    local before = Quest.buttons()
+    local before = Quest.visible()
     Util.firePrompt(c.prompt)
-    local clicked = 0
-    for i = 1, 7 do
-        task.wait(0.45)
-        local now = Quest.buttons()
-        local any = false
-        for b in pairs(now) do
+    local clicked, idle = 0, 0
+    local key = c.prompt.KeyboardKeyCode
+    if not key or key == Enum.KeyCode.Unknown then key = Enum.KeyCode.E end
+    for i = 1, 9 do
+        task.wait(0.5)
+        local now = Quest.visible()
+        local pickB, pickScore = nil, 0
+        for b, tx in pairs(now) do
             if not before[b] then
-                if Util.fireButton(b) then
-                    clicked = clicked + 1
-                    any = true
-                end
-                before[b] = true
+                local sc = Quest.goodText(tx) and 2 or 1
+                if sc > pickScore then pickB, pickScore = b, sc end
             end
         end
-        if not any and i >= 3 then break end
+        if pickB then
+            idle = 0
+            before[pickB] = true
+            if Util.fireButton(pickB) then clicked = clicked + 1 end
+        else
+            idle = idle + 1
+            if clicked > 0 and idle >= 3 then break end
+            if clicked == 0 then
+                -- nothing opened yet: interact like a real player (hold the prompt key / hold the prompt)
+                if i == 2 or i == 6 then
+                    Util.pressKey(key, (c.prompt.HoldDuration or 0) + 0.25)
+                elseif i == 4 or i == 8 then
+                    pcall(function()
+                        c.prompt:InputHoldBegin()
+                        task.wait((c.prompt.HoldDuration or 0) + 0.15)
+                        c.prompt:InputHoldEnd()
+                    end)
+                end
+            end
+        end
     end
     return clicked
 end
@@ -2347,8 +2641,8 @@ function Quest.run()
     local c = Quest.pick()
     Quest.last = os.clock()
     if not c then
-        Quest.info = "No quest NPC found nearby. Walk to an island and press Scan."
-        Hub.note("noquest", "Auto Quest: no quest NPC found. Use Scan Quest NPCs.", "bad")
+        Quest.info = "No quest NPC found nearby. Walk to an island, press Scan quest NPCs, or pick one in the list."
+        Hub.note("noquest", "Auto Quest: no quest NPC found. Use Scan quest NPCs.", "bad")
         return false
     end
     local root = Util.root()
@@ -2361,7 +2655,7 @@ function Quest.run()
     local stand = pos + dir * 4
     local gy = Util.groundY(stand)
     if gy then stand = Vector3.new(stand.X, gy + 3.2, stand.Z) end
-    local arrived = Mover.travel("quest", CFrame.lookAt(stand, Vector3.new(pos.X, stand.Y, pos.Z)), S.TravelSpeed, 80)
+    local arrived = Mover.travel("quest", CFrame.lookAt(stand, Vector3.new(pos.X, stand.Y, pos.Z)), S.TravelSpeed)
     if not arrived then
         Quest.info = "Could not reach " .. c.name .. " (blocked or cancelled)."
         return false
@@ -2499,7 +2793,7 @@ function TP.go(pos, label, standOff)
             root.CFrame = CFrame.new(dest)
             root.AssemblyLinearVelocity = ZERO
         else
-            local ok = Mover.travel("tp", Util.cfAt(dest), S.TravelSpeed, 120)
+            local ok = Mover.travel("tp", Util.cfAt(dest), S.TravelSpeed)
             if not ok then
                 Hub.note("tp", "Teleport interrupted.", "bad")
                 Hub.status = "Idle"
@@ -2729,6 +3023,12 @@ function Scan.report()
     local b = Attack.findButton()
     add("Attack button found: " .. (b and b:GetFullName() or "no") .. "   method now: " .. Attack.methods[Attack.idx] .. "   last good: " .. tostring(Attack.good))
     add("Tools: " .. table.concat(Equip.tools(), ", "))
+    add(string.format("Movement: %s | setting %s | pull-backs %d | last: %s", Mover.describe(), S.MoveMode, Mover.rollbacks, Mover.lastEvent))
+    local st = {}
+    for m, v in pairs(Attack.stats) do st[#st + 1] = string.format("%s %d/%d", m, v.hits, v.tries) end
+    table.sort(st)
+    add("Attack hits/tries: " .. (#st == 0 and "none yet" or table.concat(st, ", ")) .. "  | last test: " .. tostring(Attack.lastTest or "-"))
+    add(string.format("Spy: %s (%d logged) | macros: %d | prestige rank %d, next level %d | item engine: %s", tostring(Spy.hooked or "no hook"), Spy.count, #Spy.macroNames(), S.PrestigeRank, Prestige.required(), Items.statusText))
     local rem = {}
     pcall(function()
         for _, d in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
@@ -2757,21 +3057,13 @@ end
 -- config save / load (running toggles are never restored)
 ----------------------------------------------------------------------
 function Cfg.save()
-    if type(X.writefile) ~= "function" or not HttpService then return false end
+    if not (X.writefile and HttpService) then return false end
     local data = {}
     for _, k in ipairs(PERSIST) do data[k] = S[k] end
-
-    local okEncode, json = pcall(function()
-        return HttpService:JSONEncode(data)
-    end)
-    if not okEncode or type(json) ~= "string" then return false end
-
-    if type(X.makefolder) == "function" then
-        pcall(X.makefolder, CFG.FOLDER)
-    end
-
-    local okWrite = pcall(X.writefile, CFG.FOLDER .. "/settings.json", json)
-    return okWrite
+    local ok, json = pcall(function() return HttpService:JSONEncode(data) end)
+    if not ok then return false end
+    pcall(X.makefolder, CFG.FOLDER)
+    return pcall(X.writefile, CFG.FOLDER .. "/settings.json", json)
 end
 
 function Cfg.load()
@@ -2807,19 +3099,24 @@ end)
 -- shutdown / panic
 ----------------------------------------------------------------------
 function Hub.disableAll()
-    for _, k in ipairs({ "AutoFarm", "AutoQuest", "AutoPrestige", "BringMobs", "Hitbox", "Reach", "AutoLoot", "Noclip", "WalkSpeedOn", "AutoAttack" }) do
+    for _, k in ipairs({ "AutoFarm", "AutoQuest", "BringMobs", "Hitbox", "Reach", "AutoLoot", "Noclip", "WalkSpeedOn", "AutoAttack", "AutoPrestige", "AutoBoss", "ItemRun", "SpyOn" }) do
         S[k] = false
         if UI.toggles[k] then pcall(UI.toggles[k].Set, false, true) end
     end
     for _, k in ipairs({ "SkillZ", "SkillX", "SkillC", "SkillV", "SkillG" }) do S[k] = false end
     pcall(Hitbox.restoreAll)
     pcall(Reach.restore)
+    pcall(Items.stop)
+    Mobs.want = nil
+    Spy.on = false
     Mover.release()
 end
 
 function Hub.Destroy()
     if not Hub.alive then return end
     Hub.alive = false
+    Spy.on = false
+    if ENV.__MH_SPY_CAPTURE == Spy.capture then ENV.__MH_SPY_CAPTURE = nil end
     pcall(Hitbox.restoreAll)
     pcall(Reach.restore)
     pcall(Misc.render3d, false)
@@ -2838,179 +3135,1322 @@ end
 
 
 ----------------------------------------------------------------------
--- prestige monitor (reads the visible game UI; no hidden remotes)
+-- game data (from public guides; every name is matched fuzzily at runtime)
 ----------------------------------------------------------------------
-local Prestige = {
-    rows = {}, rank = "Unknown", level = nil, levelNeed = nil,
-    ready = false, menuOpen = false, button = nil, status = "Open the Prestige Overseer menu.",
-    lastAutoKey = "", lastAutoAt = 0, lastScan = 0,
+DB.islands = {
+    { "Starter Island", { "starter", "foosha", "fusha" } },
+    { "Legacy Island", { "legacy" } },
+    { "Jungle Island", { "jungle" } },
+    { "Ice Land", { "iceland", "ice land", "ice island" } },
+    { "A City", { "a city", "acity" } },
+    { "Slayer Mansion", { "slayer", "mansion" } },
+    { "Jujutsu High", { "jujutsu", "jiujutsu", "jiu jitsu", "jujitsu", "academy" } },
+    { "Tokyo Ghoul Island", { "ghoul", "tokyo" } },
+    { "WOO Island", { "woo", "hollow", "hueco" } },
+    { "June Island", { "june" } },
+    { "Seventh Company Island", { "seventh", "fire force" } },
+    { "Foosha Island", { "foosha" } },
+    { "Shells Town", { "shells" } },
+    { "Orange Town", { "orange" } },
+    { "Shimotsuki Village", { "shimotsuki" } },
+    { "Alvida Island", { "alvida" } },
+    { "Baratie", { "baratie" } },
+    { "Mink Island", { "mink" } },
+    { "Arlong Park", { "arlong" } },
+    { "Haki Island", { "haki island" } },
 }
 
-local function prestigeText(obj)
-    if obj:IsA("TextLabel") or obj:IsA("TextButton") then
-        return tostring(obj.Text or "")
+function DB.aliases(name)
+    local l = name:lower()
+    for _, i in ipairs(DB.islands) do
+        if i[1]:lower() == l then return i[2] end
     end
-    return ""
+    return { l }
 end
 
-local function prestigeProgress(text)
-    local a, b = text:match("%(([%d,%.]+)%s*/%s*([%d,%.]+)%)")
-    if not a then a, b = text:match("([%d,%.]+)%s*/%s*([%d,%.]+)") end
-    local function num(v)
-        if not v then return nil end
-        v = v:gsub("[,%.]", "")
-        return tonumber(v)
+-- { name, aliases, island }
+DB.bosses = {
+    { "Gojo", { "gojo" }, "Jujutsu High" },
+    { "Sukuna", { "sukuna" }, "Jujutsu High" },
+    { "Aizen", { "aizen" }, "WOO Island" },
+    { "Ichigo", { "ichigo" }, "WOO Island" },
+    { "Rudo", { "rudo" }, "A City" },
+    { "Garou", { "garou" }, "A City" },
+    { "Blast", { "blast" }, "A City" },
+    { "Akaza", { "akaza", "aaza" }, "Slayer Mansion" },
+    { "Kaneki", { "kaneki" }, "Tokyo Ghoul Island" },
+    { "Turbo Granny", { "turbo granny", "granny" }, "Jungle Island" },
+    { "Crimson Owl", { "crimson owl" }, nil },
+    { "Sid Kaganu", { "kaganu" }, nil },
+    { "Uta", { "uta" }, nil },
+    { "Yeti", { "yeti" }, "Shimotsuki Village" },
+    { "Buggy", { "buggy" }, "Orange Town" },
+    { "Johji", { "johji" }, "Orange Town" },
+    { "Axe Hand Morgan", { "morgan", "axe hand" }, "Shells Town" },
+    { "Alvida", { "alvida" }, "Alvida Island" },
+}
+
+function DB.boss(name)
+    for _, b in ipairs(DB.bosses) do
+        if b[1] == name then return b end
     end
-    return num(a), num(b)
+    return nil
 end
 
-function Prestige.scan(force)
+-- level needed for each next prestige rank (Iron IV ... Silver I); later ranks are extrapolated
+DB.prestige = { 1500, 1750, 2000, 2250, 2500, 2850, 3200, 3550, 3900, 4300, 4700, 5100 }
+
+-- kind: shop | boss | bossnpc | world | raid | pass | spec | meteor
+DB.items = {}
+local function I(n, c, k, t)
+    t = t or {}
+    t.n, t.c, t.k = n, c, k
+    DB.items[#DB.items + 1] = t
+end
+I("Katana", "Weapon", "shop", { npc = { "katana seller", "katana" }, how = "Buy it from the Katana Seller." })
+I("Saber", "Weapon", "shop", { npc = { "shanks" }, isl = "Starter Island", how = "Buy it from Shanks on Starter Island." })
+I("Ace", "Weapon", "shop", { npc = { "shanks" }, isl = "Starter Island", how = "Buy it from Shanks on Starter Island." })
+I("Pipe", "Weapon", "shop", { npc = { "pipe" }, isl = "Jungle Island", how = "Buy it from the Pipe NPC on Jungle Island." })
+I("Hakuoki Katana", "Weapon", "shop", { alias = { "hakuouki", "hakuoki" }, npc = { "sword", "weapon", "seller", "shop" }, isl = "Foosha Island", how = "Sea 1 shop weapon (850 Beli) on Foosha Island." })
+I("Crude Cutlass", "Weapon", "shop", { npc = { "sword", "weapon", "seller", "shop" }, isl = "Foosha Island", how = "Sea 1 shop weapon (850 Beli) on Foosha Island." })
+I("Dororo Katana", "Weapon", "shop", { npc = { "sword", "weapon", "seller", "shop" }, isl = "Shells Town", how = "Sea 1 shop weapon (850 Beli) in Shells Town." })
+I("Rurouni Katana", "Weapon", "shop", { npc = { "sword", "weapon", "seller", "shop" }, isl = "Shells Town", how = "Sea 1 shop weapon (850 Beli) in Shells Town." })
+I("Bazooka", "Weapon", "shop", { npc = { "weapon", "seller", "shop" }, isl = "Shells Town", how = "Sea 1 shop weapon (1,000 Beli) in Shells Town." })
+I("Axe Hand", "Weapon", "boss", { boss = { "morgan", "axe hand" }, isl = "Shells Town", kills = 12, how = "Boss drop (about 5%): Axe Hand Morgan, Shells Town." })
+I("Frost Blade", "Weapon", "boss", { boss = { "yeti" }, isl = "Shimotsuki Village", kills = 15, how = "Boss drop (about 3%): Yeti, Shimotsuki Village." })
+I("Whip", "Weapon", "boss", { boss = { "johji" }, isl = "Orange Town", kills = 12, how = "Boss drop (about 5%): Johji, Orange Town." })
+I("Buggy's Knife", "Weapon", "boss", { alias = { "buggy" }, boss = { "buggy" }, isl = "Orange Town", kills = 14, how = "Boss drop (about 4%): Buggy, Orange Town." })
+I("Zangetsu", "Weapon", "bossnpc", { boss = { "ichigo" }, npc = { "rukia" }, isl = "WOO Island", kills = 3, how = "Ichigo boss drops, then Rukia on WOO Island (needs Shinigami race)." })
+I("First Espada", "Weapon", "bossnpc", { boss = { "aizen" }, npc = { "starrk", "stark" }, isl = "WOO Island", kills = 3, how = "Hoyoku from the Aizen boss, then Starrk on WOO Island." })
+I("Mind Master", "Weapon", "bossnpc", { boss = { "aizen" }, npc = { "aizen" }, isl = "WOO Island", kills = 3, how = "Aizen boss drops, then the Aizen NPC on WOO Island." })
+I("Thunder", "Weapon", "shop", { npc = { "zenitsu" }, isl = "Slayer Mansion", how = "Buy the gourds from Zenitsu at Slayer Mansion (costly, repeat)." })
+I("Pure Love", "Weapon", "raid", { npc = { "yuta" }, isl = "Jujutsu High", how = "Raid weapon: finish the raid, then claim from Yuta. The raid itself is not automated." })
+I("Black Knight", "Weapon", "world", { boss = { "kaganu" }, kills = 40, how = "Chance drop from the Sid Kaganu world boss (random island)." })
+I("Nightblade", "Weapon", "pass", { how = "Gamepass only: nothing to automate." })
+I("Strongest Saiyan", "Spec", "spec", { npc = { "goku" }, isl = "Jungle Island", manual = true, how = "Goku NPC on Jungle Island (Saiyan race + Dragon Ball)." })
+I("Turbo Spirit", "Spec", "bossnpc", { boss = { "turbo granny", "granny" }, npc = { "okarun" }, isl = "Jungle Island", kills = 3, manual = true, how = "Turbo Granny drops, then Okarun on Jungle Island (Yokai race)." })
+I("Scrap Brawler", "Spec", "bossnpc", { boss = { "rudo" }, npc = { "rudo" }, isl = "A City", kills = 3, manual = true, how = "Rudo boss drops, then the seller in A City." })
+I("Destructive Moon", "Spec", "bossnpc", { boss = { "akaza", "aaza" }, npc = { "akaza", "kyuki" }, isl = "Slayer Mansion", kills = 8, manual = true, how = "Slayer Mansion questline: Akaza boss kills, then Akaza / Kyuki." })
+I("One Eyed Ghoul", "Spec", "bossnpc", { boss = { "kaneki" }, npc = { "kaneki", "ghoul" }, isl = "Tokyo Ghoul Island", kills = 3, manual = true, how = "Kaneki boss drops, then the seller on Tokyo Ghoul Island (Ghoul race)." })
+I("Hero Hunter", "Spec", "bossnpc", { boss = { "garou" }, npc = { "hero" }, isl = "A City", kills = 3, manual = true, how = "Garou boss drops, then the hero NPC in A City (Human race)." })
+I("Storm Esper", "Spec", "meteor", { npc = { "tatsumaki", "storm esper" }, isl = "Legacy Island", manual = true, how = "Collect meteor fragments on Jungle Island (event every ~15 min), then the Tatsumaki seller on Legacy Island." })
+I("First Hero", "Spec", "bossnpc", { boss = { "blast" }, npc = { "hero", "first hero" }, isl = "A City", kills = 3, manual = true, how = "Blast boss materials, then the hero NPC in A City." })
+I("Cursed King Sukuna", "Spec", "bossnpc", { boss = { "gojo" }, npc = { "sukuna" }, isl = "Jujutsu High", kills = 10, manual = true, how = "Needs 4 Sukuna Fingers + money first; then 10 Gojo boss kills, then the Sukuna NPC." })
+I("Limitless Gojo", "Spec", "bossnpc", { boss = { "sukuna" }, npc = { "gojo" }, isl = "Jujutsu High", kills = 12, manual = true, how = "Needs Six Eyes + money first; then Sukuna boss kills, then the Gojo NPC." })
+
+
+
+----------------------------------------------------------------------
+-- remote spy + recorder + macros (learn how the game talks to the server, then replay it)
+----------------------------------------------------------------------
+Spy.log, Spy.rate, Spy.muted, Spy.macros = {}, {}, {}, {}
+Spy.on, Spy.count, Spy.rec, Spy.hooked = false, 0, nil, nil
+local NOISE_WORDS = { "ping", "heartbeat", "mouse", "camera", "cframe", "position", "movement", "replicate", "tick", "sync", "fps" }
+
+function Spy.ser(v, depth)
+    depth = depth or 0
+    local t = typeof(v)
+    if t == "string" then
+        if #v > 44 then v = v:sub(1, 41) .. "..." end
+        return string.format("%q", v)
+    elseif t == "number" then
+        return Util.fmt(v)
+    elseif t == "boolean" or t == "nil" then
+        return tostring(v)
+    elseif t == "Instance" then
+        local ok, n = pcall(function() return v:GetFullName() end)
+        return "<" .. (ok and n or "?") .. ">"
+    elseif t == "Vector3" then
+        return string.format("V3(%.0f,%.0f,%.0f)", v.X, v.Y, v.Z)
+    elseif t == "CFrame" then
+        local p = v.Position
+        return string.format("CF(%.0f,%.0f,%.0f)", p.X, p.Y, p.Z)
+    elseif t == "table" then
+        if depth >= 2 then return "{...}" end
+        local out, n = {}, 0
+        for k, x in pairs(v) do
+            n = n + 1
+            if n > 8 then
+                out[#out + 1] = "..."
+                break
+            end
+            out[#out + 1] = (type(k) == "string" and (k .. "=") or "") .. Spy.ser(x, depth + 1)
+        end
+        return "{" .. table.concat(out, ", ") .. "}"
+    end
+    return "<" .. t .. ">"
+end
+
+function Spy.line(e)
+    local a = {}
+    for i = 1, e.args.n do a[i] = Spy.ser(e.args[i]) end
+    local verb = e.dir == "in" and "RECV" or (e.m == "InvokeServer" and "INVOKE" or "FIRE")
+    return string.format("%6.1f %s%s %s(%s)", e.t % 10000, e.mine and "[hub] " or "", verb, e.path, table.concat(a, ", "))
+end
+
+function Spy.push(e)
+    Spy.log[#Spy.log + 1] = e
+    if #Spy.log > 150 then table.remove(Spy.log, 1) end
+    Spy.count = Spy.count + 1
+    if Spy.rec and e.dir == "out" and not e.mine then Spy.rec.steps[#Spy.rec.steps + 1] = e end
+end
+
+local function noisy(path)
     local now = os.clock()
-    if not force and now - Prestige.lastScan < 1 then return Prestige.status end
-    Prestige.lastScan = now
+    local r = Spy.rate[path]
+    if not r or now - r.t > 1 then
+        r = { t = now, n = 0 }
+        Spy.rate[path] = r
+    end
+    r.n = r.n + 1
+    if not S.SpyQuiet then return false end
+    if Spy.muted[path] then return true end
+    if r.n > 8 then
+        Spy.muted[path] = true
+        return true
+    end
+    local l = path:lower()
+    for _, w in ipairs(NOISE_WORDS) do
+        if l:find(w, 1, true) then return true end
+    end
+    return false
+end
+
+function Spy.capture(remote, method, args, mine)
+    if not Spy.on then return end
+    local cn = remote.ClassName
+    if cn ~= "RemoteEvent" and cn ~= "RemoteFunction" and cn ~= "UnreliableRemoteEvent" then return end
+    local path = remote:GetFullName()
+    if noisy(path) then return end
+    Spy.push({ t = os.clock(), path = path, m = method, args = args, mine = mine and true or false, dir = "out" })
+end
+
+function Spy.captureIn(remote, args)
+    if not Spy.on then return end
+    local path = remote:GetFullName()
+    if noisy("<" .. path) then return end
+    Spy.push({ t = os.clock(), path = path, m = "OnClientEvent", args = args, mine = false, dir = "in" })
+end
+
+-- hooks are installed once per executor session; every new hub instance just re-binds the capture function
+function Spy.install()
+    if Spy.hooked then return true end
+    ENV.__MH_SPY_CAPTURE = Spy.capture
+    if ENV.__MH_SPY_HOOKED then
+        Spy.hooked = ENV.__MH_SPY_HOOKED
+        return true
+    end
+    local newcc = newcclosure or function(f) return f end
+    local function mineNow()
+        local ok, r = pcall(function() return checkcaller and checkcaller() end)
+        return ok and r or false
+    end
+    if hookmetamethod and getnamecallmethod then
+        local old
+        local ok = pcall(function()
+            old = hookmetamethod(game, "__namecall", newcc(function(self, ...)
+                local m = getnamecallmethod()
+                if m == "FireServer" or m == "InvokeServer" then
+                    local f = ENV.__MH_SPY_CAPTURE
+                    if f then
+                        -- logging runs in its own thread so the game's namecall state is never disturbed
+                        task.defer(f, self, m, table.pack(...), mineNow())
+                    end
+                end
+                return old(self, ...)
+            end))
+        end)
+        if ok and old then
+            Spy.hooked = "__namecall"
+            ENV.__MH_SPY_HOOKED = "__namecall"
+            return true
+        end
+    end
+    if hookfunction then
+        local ok = pcall(function()
+            local re, rf = Instance.new("RemoteEvent"), Instance.new("RemoteFunction")
+            local oldFS, oldIS
+            oldFS = hookfunction(re.FireServer, newcc(function(self, ...)
+                local f = ENV.__MH_SPY_CAPTURE
+                if f then task.defer(f, self, "FireServer", table.pack(...), mineNow()) end
+                return oldFS(self, ...)
+            end))
+            oldIS = hookfunction(rf.InvokeServer, newcc(function(self, ...)
+                local f = ENV.__MH_SPY_CAPTURE
+                if f then task.defer(f, self, "InvokeServer", table.pack(...), mineNow()) end
+                return oldIS(self, ...)
+            end))
+        end)
+        if ok then
+            Spy.hooked = "hookfunction"
+            ENV.__MH_SPY_HOOKED = "hookfunction"
+            return true
+        end
+    end
+    return false
+end
+
+function Spy.watchIncoming()
+    if Spy.watching then return end
+    Spy.watching = true
+    local n = 0
+    pcall(function()
+        for _, d in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
+            if d:IsA("RemoteEvent") and n < 60 then
+                n = n + 1
+                Hub.track(d.OnClientEvent:Connect(function(...) Spy.captureIn(d, table.pack(...)) end))
+            end
+        end
+    end)
+end
+
+function Spy.setOn(on)
+    Spy.on = on and true or false
+    if Spy.on then
+        local ok = Spy.install()
+        Spy.watchIncoming()
+        if ok then
+            Hub.note("spy", "Remote Spy on (" .. tostring(Spy.hooked) .. "). Use the game normally.", "ok")
+        else
+            Hub.note("spy", "No remote hook on this executor: only server-to-you messages are logged.", "bad")
+        end
+    end
+end
+
+function Spy.text(n)
+    if #Spy.log == 0 then
+        if not Spy.on then return "Spy is off. Turn it on, then use the game: buy something, open the island teleport, prestige..." end
+        return "Spy is on. Nothing logged yet (noisy remotes are hidden)."
+    end
+    local out = {}
+    for i = math.max(1, #Spy.log - n + 1), #Spy.log do out[#out + 1] = Spy.line(Spy.log[i]) end
+    return table.concat(out, "\n")
+end
+
+-- macro (de)serialisation -------------------------------------------------
+function Spy.encode(v)
+    local t = typeof(v)
+    if t == "string" or t == "number" or t == "boolean" then return v end
+    if t == "nil" then return { __t = "nil" } end
+    if t == "Vector3" then return { __t = "v3", v = { v.X, v.Y, v.Z } } end
+    if t == "CFrame" then return { __t = "cf", v = { v:GetComponents() } } end
+    if t == "Instance" then
+        if v == LP.Character then return { __t = "me", k = "char" } end
+        if v == LP then return { __t = "me", k = "player" } end
+        local ok, p = pcall(function() return v:GetFullName() end)
+        return { __t = "inst", p = ok and p or "" }
+    end
+    if t == "table" then
+        if #v > 0 then
+            local a = {}
+            for i, x in ipairs(v) do a[i] = Spy.encode(x) end
+            return { __t = "arr", v = a }
+        end
+        local o = {}
+        for k, x in pairs(v) do o[tostring(k)] = Spy.encode(x) end
+        return { __t = "map", v = o }
+    end
+    return { __t = "str", v = tostring(v) }
+end
+
+function Spy.resolve(path)
+    local cur = game
+    for part in tostring(path):gmatch("[^%.]+") do
+        cur = cur and cur:FindFirstChild(part)
+        if not cur then return nil end
+    end
+    return cur
+end
+
+function Spy.decode(v)
+    if type(v) ~= "table" then return v end
+    local t = v.__t
+    if t == "nil" then return nil end
+    if t == "v3" then return Vector3.new(v.v[1], v.v[2], v.v[3]) end
+    if t == "cf" then return CFrame.new(table.unpack(v.v)) end
+    if t == "me" then return v.k == "char" and LP.Character or LP end
+    if t == "inst" then return Spy.resolve(v.p) end
+    if t == "arr" then
+        local a = {}
+        for i, x in ipairs(v.v) do a[i] = Spy.decode(x) end
+        return a
+    end
+    if t == "map" then
+        local o = {}
+        for k, x in pairs(v.v) do o[k] = Spy.decode(x) end
+        return o
+    end
+    if t == "str" then return v.v end
+    return nil
+end
+
+function Spy.macroNames()
+    local out = {}
+    for n in pairs(Spy.macros) do out[#out + 1] = n end
+    table.sort(out)
+    return out
+end
+
+function Spy.save()
+    if not (X.writefile and HttpService) then return false end
+    local ok, json = pcall(function() return HttpService:JSONEncode(Spy.macros) end)
+    if not ok then return false end
+    pcall(X.makefolder, CFG.FOLDER)
+    return pcall(X.writefile, CFG.FOLDER .. "/macros.json", json)
+end
+
+function Spy.load()
+    if not (X.readfile and X.isfile and HttpService) then return end
+    local path = CFG.FOLDER .. "/macros.json"
+    local okf, ex = pcall(X.isfile, path)
+    if not (okf and ex) then return end
+    local ok, raw = pcall(X.readfile, path)
+    if not ok or type(raw) ~= "string" then return end
+    local ok2, data = pcall(function() return HttpService:JSONDecode(raw) end)
+    if ok2 and type(data) == "table" then Spy.macros = data end
+end
+
+function Spy.delete(name)
+    Spy.macros[name] = nil
+    Spy.save()
+end
+
+function Spy.record(seconds, name)
+    if Spy.rec then
+        Hub.note("rec", "Already recording.", "bad")
+        return
+    end
+    if not Spy.install() then
+        Hub.note("rec", "This executor cannot hook remotes (no hookmetamethod / hookfunction).", "bad")
+        return
+    end
+    Spy.on = true
+    if UI.toggles.SpyOn then UI.toggles.SpyOn.Set(true, true) end
+    if not name or name == "" then
+        local n = 1
+        while Spy.macros["Macro " .. n] do n = n + 1 end
+        name = "Macro " .. n
+    end
+    Spy.rec = { steps = {} }
+    Hub.note("recst", "Recording " .. seconds .. "s: do the action in the game NOW.", "force")
+    Hub.status = "Recording '" .. name .. "'..."
+    task.delay(seconds, function()
+        local rec = Spy.rec
+        Spy.rec = nil
+        Hub.status = "Idle"
+        if not rec or #rec.steps == 0 then
+            Hub.note("recend", "Nothing recorded: the game sent no remote calls (or they were muted).", "bad")
+            return
+        end
+        local steps, prev = {}, rec.steps[1].t
+        for i, e in ipairs(rec.steps) do
+            if i > 40 then break end
+            local a = {}
+            for j = 1, e.args.n do a[tostring(j)] = Spy.encode(e.args[j]) end
+            steps[#steps + 1] = { p = e.path, m = e.m, n = e.args.n, a = a, d = Util.clamp(e.t - prev, 0.05, 2) }
+            prev = e.t
+        end
+        Spy.macros[name] = steps
+        Spy.save()
+        S.MacroSel = name
+        if UI.dropdowns.MacroSel then UI.dropdowns.MacroSel.Set(name, true) end
+        Hub.note("recend", "Saved macro '" .. name .. "' (" .. #steps .. " calls).", "ok")
+    end)
+end
+
+function Spy.play(name)
+    local steps = Spy.macros[name]
+    if not steps then return 0 end
+    local fired = 0
+    for _, st in ipairs(steps) do
+        task.wait(st.d or 0.1)
+        local r = Spy.resolve(st.p)
+        if not r then
+            Hub.note("macrofail", "Macro '" .. name .. "': remote not found (" .. tostring(st.p) .. ")", "bad")
+            return fired
+        end
+        local args = {}
+        for i = 1, st.n or 0 do args[i] = Spy.decode(st.a and st.a[tostring(i)]) end
+        local ok = pcall(function()
+            if st.m == "InvokeServer" then
+                r:InvokeServer(table.unpack(args, 1, st.n or 0))
+            else
+                r:FireServer(table.unpack(args, 1, st.n or 0))
+            end
+        end)
+        if ok then fired = fired + 1 end
+    end
+    return fired
+end
+
+function Spy.describe(name)
+    local steps = Spy.macros[name]
+    if not steps then return "No macro selected." end
+    local out = { name .. ": " .. #steps .. " call(s)" }
+    for i, st in ipairs(steps) do
+        if i > 6 then
+            out[#out + 1] = "..."
+            break
+        end
+        out[#out + 1] = string.format("%d. %s %s (%d arg)", i, st.m == "InvokeServer" and "INVOKE" or "FIRE", st.p, st.n or 0)
+    end
+    return table.concat(out, "\n")
+end
+
+
+
+----------------------------------------------------------------------
+-- shared helpers for the goal modules
+----------------------------------------------------------------------
+local BOSS_ANY = "Any boss"
+
+function Util.nameHas(name, alias)
+    local l = tostring(name):lower()
+    local padded = " " .. l:gsub("[^%w]+", " ") .. " "
+    if padded:find(" " .. alias .. " ", 1, true) then return true end
+    if #alias >= 5 and l:find(alias, 1, true) then return true end
+    return false
+end
+
+function Util.nameMatchAny(name, list)
+    for _, a in ipairs(list) do
+        if Util.nameHas(name, a) then return true end
+    end
+    return false
+end
+
+function Util.btnText(b)
+    local tx = b:IsA("TextButton") and b.Text or ""
+    if tx == "" then
+        local lbl = b:FindFirstChildWhichIsA("TextLabel", true)
+        tx = lbl and lbl.Text or ""
+    end
+    return tx
+end
+
+-- the player's level read from the HUD (fallback when no leaderstats / attribute exists)
+function Util.guiLevel()
+    local now = os.clock()
+    if Util._glT and now - Util._glT < 5 then return Util._gl end
+    Util._glT = now
     local pg = LP:FindFirstChild("PlayerGui")
-    if not pg then
-        Prestige.menuOpen = false
-        Prestige.status = "PlayerGui not available."
-        return Prestige.status
+    local best, bestPref
+    if pg then
+        local n = 0
+        for _, d in ipairs(pg:GetDescendants()) do
+            n = n + 1
+            if n % 700 == 0 then task.wait() end
+            if d:IsA("TextLabel") and d.Visible and #d.Text < 24 then
+                local lv = d.Text:match("^%s*[Ll][Vv][Ll]?%.?%s*:?%s*(%d+)%s*$") or d.Text:match("^%s*[Ll]evel%s*:?%s*(%d+)%s*$")
+                lv = lv and tonumber(lv)
+                if lv and lv > 0 and lv < 20000 then
+                    local pref = false
+                    local p = d
+                    for _ = 1, 6 do
+                        p = p and p.Parent
+                        if not p or p == pg then break end
+                        local nm = p.Name:lower()
+                        if nm:find("exp", 1, true) or nm:find("xp", 1, true) or nm:find("level", 1, true) or nm:find("stat", 1, true) or nm:find("player", 1, true) then
+                            pref = true
+                            break
+                        end
+                    end
+                    if pref then
+                        if not bestPref or lv > bestPref then bestPref = lv end
+                    elseif not best or lv > best then
+                        best = lv
+                    end
+                end
+            end
+        end
     end
+    Util._gl = bestPref or best
+    return Util._gl
+end
 
-    local rows, rank, level, levelNeed = {}, "Unknown", nil, nil
-    local menuFound, candidate = false, nil
-    local count = 0
+----------------------------------------------------------------------
+-- islands: fast travel macro > discovered position
+----------------------------------------------------------------------
+function POI.findIsland(name)
+    local aliases = DB.aliases(name)
+    for _, p in ipairs(POI.islands) do
+        for _, a in ipairs(aliases) do
+            if Util.nameHas(p.name, a) then return p end
+        end
+    end
+    return nil
+end
+
+function TP.goBlocking(pos)
+    local dest = pos
+    local gy = Util.groundY(dest)
+    if gy then dest = Vector3.new(dest.X, gy + 3.4, dest.Z) else dest = dest + Vector3.new(0, 4, 0) end
+    if S.InstantTP then
+        local r = Util.root()
+        if r then r.CFrame = Util.cfAt(dest) end
+        return true
+    end
+    return Mover.travel("tp", Util.cfAt(dest), S.TravelSpeed)
+end
+
+function TP.toIsland(name)
+    local mac = "TP: " .. name
+    if Spy.macros[mac] then
+        Hub.status = "Fast travel: " .. name
+        Spy.play(mac)
+        task.wait(3.5)
+        return true
+    end
+    local p = POI.findIsland(name)
+    if not p then
+        POI.scan()
+        p = POI.findIsland(name)
+    end
+    if p then
+        Hub.status = "Travelling to " .. name
+        return TP.goBlocking(p.pos)
+    end
+    return false
+end
+
+function TP.islandGo(name)
+    Hub.stopAutomation("teleport")
+    task.spawn(function()
+        local ok = TP.toIsland(name)
+        if ok then
+            Hub.note("tpi", "Done: " .. name, "ok")
+        else
+            Hub.note("tpi", "Island not loaded. Record a macro named 'TP: " .. name .. "' in Spy while you use the game's own teleport.", "bad")
+        end
+        Hub.status = "Idle"
+    end)
+end
+
+----------------------------------------------------------------------
+-- NPC interaction for shops / claims (clicks the item's own buy button)
+----------------------------------------------------------------------
+Items.running, Items.token, Items.statusText, Items.farmOn = false, 0, "Idle.", false
+local SHOP_BAD = { "cancel", "close", "no", "decline", "exit", "leave", "delete", "reset", "robux", "abandon", "back", "sell" }
+local BUY_WORDS = { "buy", "purchase", "unlock", "get", "claim", "craft", "equip", "select", "confirm", "yes", "accept" }
+local GOOD_WORDS = { "accept", "continue", "next", "yes", "confirm", "claim", "buy", "purchase", "unlock", "get", "equip", "craft", "okay", "start", "prestige", "summon", "spawn", "ascend", "rank" }
+
+function Items.setStatus(t)
+    Items.statusText = t
+    Hub.status = t
+end
+
+function Items.labels()
+    local out = {}
+    for _, r in ipairs(DB.items) do out[#out + 1] = "Auto-" .. r.n end
+    return out
+end
+
+function Items.byLabel(l)
+    for _, r in ipairs(DB.items) do
+        if "Auto-" .. r.n == l then return r end
+    end
+    return nil
+end
+
+function Items.describe(l)
+    local r = Items.byLabel(l)
+    if not r then return "Pick an item." end
+    return string.format("%s  [%s]\n%s", r.n, r.c, r.how or "")
+end
+
+function Items.has(r)
+    local names = { r.n:lower() }
+    for _, a in ipairs(r.alias or {}) do names[#names + 1] = a end
+    for _, cont in ipairs({ LP.Character, LP:FindFirstChildOfClass("Backpack") }) do
+        if cont then
+            for _, t in ipairs(cont:GetChildren()) do
+                if t:IsA("Tool") then
+                    local l = t.Name:lower()
+                    for _, n in ipairs(names) do
+                        if l:find(n, 1, true) then return true end
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
+function Items.findNPC(names)
+    Quest.scan()
+    local root = Util.root()
+    local best, bd = nil, math.huge
+    for _, c in ipairs(Quest.prompts) do
+        if c.hasModel then
+            for _, n in ipairs(names) do
+                if Util.nameHas(c.name, n) or Util.nameHas(c.label, n) then
+                    local d = root and (c.pos - root.Position).Magnitude or 0
+                    if d < bd then best, bd = c, d end
+                    break
+                end
+            end
+        end
+    end
+    return best
+end
+
+function Items.goNPC(c)
+    local root = Util.root()
+    if not root then return false end
+    local pos = c.pos
+    local dir = root.Position - pos
+    dir = Vector3.new(dir.X, 0, dir.Z)
+    if dir.Magnitude > 0.1 then dir = dir.Unit else dir = Vector3.new(0, 0, 1) end
+    local stand = pos + dir * 4
+    local gy = Util.groundY(stand)
+    if gy then stand = Vector3.new(stand.X, gy + 3.2, stand.Z) end
+    return Mover.travel("items", CFrame.lookAt(stand, Vector3.new(pos.X, stand.Y, pos.Z)), S.TravelSpeed)
+end
+
+function Items.visibleAll()
+    local out = {}
+    local pg = LP:FindFirstChild("PlayerGui")
+    if not pg then return out end
+    local n = 0
     for _, d in ipairs(pg:GetDescendants()) do
-        count = count + 1
-        if count % 800 == 0 then task.wait() end
-        if (d:IsA("TextLabel") or d:IsA("TextButton")) and Util.guiVisible(d) then
-            local raw = prestigeText(d)
-            local t = raw:lower()
-            if t:find("menu de prest", 1, true) or t:find("prestige menu", 1, true) then
-                menuFound = true
-            end
-            local r = raw:match("([%aÀ-ÿ]+%s+[IVX]+)%s*%(")
-            if r then rank = r end
-            if t:find("nível", 1, true) or t:find("nivel", 1, true) or t:find("level", 1, true) then
-                local cur, req = prestigeProgress(raw)
-                if cur and req then
-                    level, levelNeed = cur, req
-                    rows[#rows + 1] = raw
+        n = n + 1
+        if n % 700 == 0 then task.wait() end
+        if d:IsA("GuiButton") then
+            local tx = Util.btnText(d)
+            if tx ~= "" and #tx <= 40 and Util.guiVisible(d) then
+                local l = tx:lower()
+                local bad = false
+                for _, w in ipairs(SHOP_BAD) do
+                    if l == w or l:find("%f[%a]" .. w .. "%f[%A]") then
+                        bad = true
+                        break
+                    end
                 end
-            elseif t:find("npc", 1, true) or t:find("elimine", 1, true) or t:find("kill", 1, true) then
-                local cur, req = prestigeProgress(raw)
-                if cur and req then rows[#rows + 1] = raw end
-            elseif t:find("boss", 1, true) or t:find("fragment", 1, true) or t:find("core", 1, true) or t:find("material", 1, true) then
-                if #raw > 0 and #raw < 120 then rows[#rows + 1] = raw end
+                if not bad then out[d] = tx end
             end
-            if d:IsA("TextButton") then
-                local hasPrestigeWord = t:find("prestig", 1, true) or t:find("ascend", 1, true)
-                local lockedText = t:find("requisitos faltando", 1, true) or t:find("requirements missing", 1, true) or t:find("locked", 1, true)
-                if hasPrestigeWord and not lockedText and d.Active then
-                    candidate = d
+        end
+    end
+    return out
+end
+
+function Items.goodWord(l)
+    for _, w in ipairs(GOOD_WORDS) do
+        if l:find(w, 1, true) then return true end
+    end
+    return false
+end
+
+-- a shop card shows the item name next to its own Buy button: find that button (never climb into big lists)
+function Items.buyFor(w, skip)
+    local pg = LP:FindFirstChild("PlayerGui")
+    if not pg then return nil end
+    local now = os.clock()
+    local n = 0
+    for _, d in ipairs(pg:GetDescendants()) do
+        n = n + 1
+        if n % 700 == 0 then task.wait() end
+        if (d:IsA("TextLabel") or d:IsA("TextButton")) and #d.Text <= 40 and d.Text:lower():find(w, 1, true)
+            and Util.guiVisible(d) and not (skip and skip[d]) then
+            local a = d
+            for _ = 1, 5 do
+                if not a.Parent or a.Parent == pg then break end
+                a = a.Parent
+                if a:IsA("ScreenGui") then break end
+                local btns = {}
+                for _, b in ipairs(a:GetDescendants()) do
+                    if b:IsA("GuiButton") then btns[#btns + 1] = b end
+                end
+                if #btns > 6 then break end
+                for _, b in ipairs(btns) do
+                    if b ~= d and Util.guiVisible(b) then
+                        local l = Util.btnText(b):lower()
+                        for _, bw in ipairs(BUY_WORDS) do
+                            if l == bw or l:find("%f[%a]" .. bw .. "%f[%A]") then
+                                if not (Items.lastBuy == b and now - Items.lastBuyT < 2.5) then
+                                    Items.lastBuy, Items.lastBuyT = b, now
+                                    return b
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+            if d:IsA("TextButton") and not (Items.lastBuy == d and now - Items.lastBuyT < 2.5) then
+                Items.lastBuy, Items.lastBuyT = d, now
+                return d
+            end
+        end
+    end
+    return nil
+end
+
+-- visible labels / buttons that already contain one of the names (so we only react to NEW ones)
+function Items.nameHits(names)
+    local out = {}
+    local pg = LP:FindFirstChild("PlayerGui")
+    if not pg then return out end
+    local n = 0
+    for _, d in ipairs(pg:GetDescendants()) do
+        n = n + 1
+        if n % 700 == 0 then task.wait() end
+        if (d:IsA("TextLabel") or d:IsA("TextButton")) and #d.Text <= 40 then
+            local l = d.Text:lower()
+            for _, w in ipairs(names) do
+                if l:find(w, 1, true) and Util.guiVisible(d) then
+                    out[d] = true
+                    break
                 end
             end
         end
     end
-
-    Prestige.rows = rows
-    Prestige.rank = rank
-    Prestige.level = level
-    Prestige.levelNeed = levelNeed
-    Prestige.menuOpen = menuFound or (#rows > 0)
-    Prestige.button = candidate
-    Prestige.ready = candidate ~= nil
-    if not Prestige.menuOpen then
-        Prestige.status = "Prestige menu not detected. Open the Overseer menu."
-    elseif Prestige.ready then
-        Prestige.status = "Requirements appear complete. Prestige button detected; verify the game screen."
-    elseif level and levelNeed then
-        Prestige.status = string.format("%s | Level %d / %d | requirements still pending or button not detected.", rank, level, levelNeed)
-    else
-        Prestige.status = rank .. " | Menu detected; reading requirements..."
-    end
-    return Prestige.status
+    return out
 end
 
-function Prestige.tryAutoConfirm()
-    if not S.AutoPrestige then return end
-    Prestige.scan(false)
-    local b = Prestige.button
-    if not (Prestige.menuOpen and Prestige.ready and b and b.Parent and Util.guiVisible(b)) then return end
-    local txt = prestigeText(b):lower()
-    if not (txt:find("prestig", 1, true) or txt:find("ascend", 1, true)) then return end
-    local key = Prestige.rank .. ":" .. tostring(Prestige.level) .. ":" .. txt
-    if key == Prestige.lastAutoKey and os.clock() - Prestige.lastAutoAt < 20 then return end
-    Prestige.lastAutoKey, Prestige.lastAutoAt = key, os.clock()
-
-    -- Fire only the button's existing UI signals. No remote discovery or mouse emulation.
-    local fired = false
-    if X.getconns then
-        for _, sigName in ipairs({ "Activated", "MouseButton1Click" }) do
-            local ok, conns = pcall(function() return X.getconns(b[sigName]) end)
-            if ok and type(conns) == "table" then
-                for _, c in ipairs(conns) do
-                    if pcall(function() c:Fire() end) then fired = true end
+-- talk to an NPC and click what we want (item name first, then accept/confirm-style buttons)
+function Items.talk(c, wanted, doneFn, names)
+    names = names or { wanted[1] }
+    local before = Items.visibleAll()
+    local pre = Items.nameHits(names)
+    Util.firePrompt(c.prompt)
+    local idle, clicks = 0, 0
+    local key = c.prompt.KeyboardKeyCode
+    if not key or key == Enum.KeyCode.Unknown then key = Enum.KeyCode.E end
+    for i = 1, 14 do
+        task.wait(0.55)
+        if doneFn and doneFn() then return clicks end
+        local now = Items.visibleAll()
+        local target
+        for _, w in ipairs(names) do
+            target = Items.buyFor(w, pre)
+            if target then break end
+        end
+        if not target then
+            local bestScore = 0
+            for b, tx in pairs(now) do
+                if not before[b] then
+                    local l = tx:lower()
+                    local sc = 1
+                    for _, w in ipairs(wanted) do
+                        if l:find(w, 1, true) then
+                            sc = 4
+                            break
+                        end
+                    end
+                    if sc == 1 and Items.goodWord(l) then sc = 2 end
+                    if sc > bestScore then target, bestScore = b, sc end
                 end
+            end
+            if target then before[target] = true end
+        end
+        if target then
+            idle = 0
+            if Util.fireButton(target) then clicks = clicks + 1 end
+        else
+            idle = idle + 1
+            if clicks > 0 and idle >= 3 then break end
+            if clicks == 0 and (i == 2 or i == 6) then
+                Util.pressKey(key, (c.prompt.HoldDuration or 0) + 0.25)
+            elseif clicks == 0 and (i == 4 or i == 9) then
+                pcall(function()
+                    c.prompt:InputHoldBegin()
+                    task.wait((c.prompt.HoldDuration or 0) + 0.15)
+                    c.prompt:InputHoldEnd()
+                end)
             end
         end
     end
-    if not fired and X.firesignal then
-        local ok = pcall(function() X.firesignal(b.Activated) end)
-        fired = ok
-    end
-    if fired then
-        Prestige.status = "Prestige confirmation sent. Waiting for the game to update..."
-        Hub.note("prestige", Prestige.status, "ok")
-    else
-        Prestige.status = "Ready, but this executor cannot activate the game's button safely. Tap it manually."
-        Hub.note("prestige", Prestige.status, "bad")
-    end
+    return clicks
 end
 
-Hub.loop("prestige-monitor", function()
-    Prestige.scan(false)
-    Prestige.tryAutoConfirm()
-    return 1.25
+----------------------------------------------------------------------
+-- bosses
+----------------------------------------------------------------------
+function Boss.labels()
+    local out = { BOSS_ANY }
+    for _, b in ipairs(DB.bosses) do out[#out + 1] = b[1] end
+    return out
+end
+
+function Boss.patterns(sel)
+    if sel == BOSS_ANY then
+        local out = {}
+        for _, b in ipairs(DB.bosses) do
+            for _, a in ipairs(b[2]) do out[#out + 1] = a end
+        end
+        return out
+    end
+    local b = DB.boss(sel)
+    return b and b[2] or { tostring(sel):lower() }
+end
+
+function Boss.byAlias(a)
+    for _, b in ipairs(DB.bosses) do
+        for _, x in ipairs(b[2]) do
+            if x == a then return b end
+        end
+    end
+    return nil
+end
+
+function Boss.find(pats)
+    local root = Util.root()
+    if not root then return nil end
+    local best, bd = nil, math.huge
+    for _, e in ipairs(Mobs.alive()) do
+        if Util.nameMatchAny(e.model.Name, pats) or Util.nameMatchAny(e.base, pats) then
+            local d = (e.root.Position - root.Position).Magnitude
+            if d < bd then best, bd = e, d end
+        end
+    end
+    return best
+end
+
+function Boss.summon(name, pats)
+    local mac = "Summon: " .. name
+    if Spy.macros[mac] then
+        Spy.play(mac)
+        return true
+    end
+    local c = Items.findNPC({ "summon" })
+    if not c or not Items.goNPC(c) then return false end
+    Items.talk(c, { name:lower(), "summon", "spawn" }, function() return Boss.find(pats) ~= nil end, { name:lower() })
+    return true
+end
+
+-- make sure the boss is on screen: remembered position > its island > summon
+function Boss.ensure(pats, isl, name)
+    local e = Boss.find(pats)
+    if e then return e end
+    for base, k in pairs(Mobs.known) do
+        if k.pos and Util.nameMatchAny(base, pats) then
+            Hub.status = "Heading to the last seen " .. base
+            TP.goBlocking(k.pos)
+            task.wait(2)
+            e = Boss.find(pats)
+            if e then return e end
+            break
+        end
+    end
+    if isl then
+        Hub.status = "Going to " .. isl .. " for the boss..."
+        TP.toIsland(isl)
+        task.wait(3)
+        e = Boss.find(pats)
+        if e then return e end
+    end
+    if name and Boss.summon(name, pats) then
+        for _ = 1, 10 do
+            task.wait(1)
+            e = Boss.find(pats)
+            if e then return e end
+        end
+    end
+    return nil
+end
+
+function Boss.kill(e, pats, alive)
+    Mobs.want = { patterns = pats, exclusive = true }
+    Items.engageFarm(true)
+    local t0 = os.clock()
+    while alive() and Mobs.isAlive(e) and os.clock() - t0 < 420 do task.wait(0.5) end
+    return not Mobs.isAlive(e)
+end
+
+Boss.lastTravel = 0
+Hub.loop("boss", function()
+    if not S.AutoBoss or Hub.paused or Prestige.busy or Items.running then return 1.5 end
+    local pats = Boss.patterns(S.BossSel)
+    local e = Boss.find(pats)
+    if e then
+        Mobs.want = { patterns = pats, exclusive = false }
+        if not S.AutoFarm and UI.toggles.AutoFarm then UI.toggles.AutoFarm.Set(true) end
+        Hub.status = "Boss: " .. e.base
+        return 1
+    end
+    Mobs.want = nil
+    local now = os.clock()
+    if S.BossIsland and S.BossSel ~= BOSS_ANY and now - Boss.lastTravel > 120 then
+        local b = DB.boss(S.BossSel)
+        if b and b[3] and not Mover.owner then
+            Boss.lastTravel = now
+            Hub.status = "Boss: travelling to " .. b[3]
+            TP.toIsland(b[3])
+        end
+    end
+    return 3
 end)
 
----------------------------------------------------------------------
--- pages
----------------------------------------------------------------------
-function UI.buildPages()
-    --------------------------------------------------------- PRESTIGE
-    local pr = UI.addTab("Prestige")
-    pr:Section("Prestige Overseer")
-    pr:Paragraph("Reads the visible Prestige menu and tracks requirements. Open the Prestige Overseer menu in-game first. Auto Prestige only activates a visible, enabled Prestige button; it does not farm NPCs or bosses.")
-    local prestigeInfo = pr:Paragraph(Prestige.status)
-    pr:Toggle("Auto Prestige confirmation", "AutoPrestige", function(on)
-        if on then
-            Prestige.lastAutoKey = ""
-            Hub.note("prestige-toggle", "Auto confirmation armed. Keep the Prestige menu open and verify the displayed requirements.", "force")
+----------------------------------------------------------------------
+-- Auto-Item engine
+----------------------------------------------------------------------
+function Items.engageFarm(on)
+    if on then
+        if not S.AutoFarm and UI.toggles.AutoFarm then
+            UI.toggles.AutoFarm.Set(true, true)
+            Farm.target = nil
         end
-    end)
-    pr:Button("Scan Prestige requirements", function()
-        prestigeInfo.Set(Prestige.scan(true))
-        Hub.note("prestige-scan", "Prestige menu scan completed.", "ok")
-    end)
-    pr:Button("Go to Legacy Island (if discovered)", function()
-        local target
-        for _, place in ipairs(POI.islands) do
-            local n = place.name:lower()
-            if n:find("legacy", 1, true) then target = place break end
-        end
-        if target then TP.go(target.pos, target.name)
-        else Hub.note("legacy-island", "Legacy Island was not found. Use Rescan map in Teleport first.", "bad") end
-    end, true)
-    UI.hook(function()
-        if prestigeInfo and UI.current == 1 then
-            local lines = { Prestige.status, "Rank: " .. Prestige.rank }
-            if Prestige.level and Prestige.levelNeed then
-                lines[#lines + 1] = string.format("Level: %d / %d", Prestige.level, Prestige.levelNeed)
-            end
-            for i = 1, math.min(#Prestige.rows, 6) do lines[#lines + 1] = Prestige.rows[i] end
-            prestigeInfo.Set(table.concat(lines, "\n"))
-        end
-    end)
+        if not S.AutoAttack and UI.toggles.AutoAttack then UI.toggles.AutoAttack.Set(true, true) end
+        Items.farmOn = true
+    elseif Items.farmOn then
+        Items.farmOn = false
+        Mobs.want = nil
+        if UI.toggles.AutoFarm then UI.toggles.AutoFarm.Set(false, true) end
+        Mover.release("farm")
+        Farm.target = nil
+    end
+end
 
+function Items.bossPhase(r, alive)
+    local b = Boss.byAlias(r.boss[1])
+    local sname = b and b[1] or r.boss[1]
+    for k = 1, (r.kills or 1) do
+        if not alive() then return end
+        local e
+        for _ = 1, 8 do
+            e = Boss.ensure(r.boss, r.isl, sname)
+            if e or not alive() then break end
+            Items.setStatus("Waiting for " .. sname .. " to spawn...")
+            Items.engageFarm(false)
+            for _ = 1, 20 do
+                if not alive() then return end
+                task.wait(1)
+            end
+        end
+        if not e then return end
+        Items.setStatus(string.format("Killing %s (%d/%d)", sname, k, r.kills or 1))
+        Boss.kill(e, r.boss, alive)
+        task.wait(1.5)
+        if Items.has(r) then return end
+    end
+end
+
+function Items.npcPhase(r, alive)
+    Items.engageFarm(false)
+    local c = Items.findNPC(r.npc)
+    if not c and r.isl then
+        Items.setStatus("Going to " .. r.isl .. " to find " .. r.npc[1] .. "...")
+        TP.toIsland(r.isl)
+        task.wait(3)
+        c = Items.findNPC(r.npc)
+    end
+    if not c then
+        Items.setStatus("Could not find the NPC (" .. r.npc[1] .. "). Walk near it once, or record a macro in Spy.")
+        Hub.note("npcnf", "NPC not found: " .. r.npc[1], "bad")
+        for _ = 1, 5 do
+            if not alive() then return false end
+            task.wait(1)
+        end
+        return false
+    end
+    Items.setStatus("Walking to " .. c.name)
+    if not Items.goNPC(c) then return false end
+    local wanted = { r.n:lower() }
+    for _, a in ipairs(r.alias or {}) do wanted[#wanted + 1] = a end
+    Items.setStatus("Talking to " .. c.name)
+    Items.talk(c, wanted, function() return Items.has(r) end, wanted)
+    return true
+end
+
+function Items.meteorWait(r, alive)
+    Items.engageFarm(false)
+    Items.setStatus("Going to Jungle Island for meteor fragments...")
+    TP.toIsland("Jungle Island")
+    local oldLoot, oldRad = S.AutoLoot, S.LootRadius
+    S.AutoLoot, S.LootRadius = true, 150
+    for i = 1, 960 do
+        if not alive() then break end
+        Items.setStatus(string.format("Waiting for a meteor event (%d s left)...", 960 - i))
+        task.wait(1)
+    end
+    S.AutoLoot, S.LootRadius = oldLoot, oldRad
+end
+
+function Items.run(r, token)
+    local function alive() return Hub.alive and Items.running and Items.token == token end
+    if r.k == "pass" then
+        Items.setStatus(r.n .. " is gamepass-only: nothing to automate.")
+        return
+    end
+    for attempt = 1, S.ItemAttempts do
+        if not alive() then return end
+        if Items.has(r) then
+            Items.setStatus("You have " .. r.n .. "!")
+            Hub.note("itemok", "Got " .. r.n .. "!", "ok")
+            return
+        end
+        Items.setStatus(string.format("Auto-%s: attempt %d/%d", r.n, attempt, S.ItemAttempts))
+        local mac = "Get: " .. r.n
+        if Spy.macros[mac] then
+            Items.setStatus("Replaying your macro '" .. mac .. "'")
+            Spy.play(mac)
+            task.wait(1.5)
+        end
+        if alive() and not Items.has(r) and r.k == "meteor" then Items.meteorWait(r, alive) end
+        if alive() and not Items.has(r) and r.boss then Items.bossPhase(r, alive) end
+        if alive() and not Items.has(r) and r.npc then Items.npcPhase(r, alive) end
+        if not alive() then return end
+        if Items.has(r) then
+            Items.setStatus("You have " .. r.n .. "!")
+            Hub.note("itemok", "Got " .. r.n .. "!", "ok")
+            return
+        end
+        if r.k == "raid" then
+            Items.setStatus(r.n .. ": the raid part is not automated. Do the raid, then run this again.")
+            return
+        end
+        if r.manual then
+            Items.setStatus("Finished one full cycle for " .. r.n .. ". Check in-game if you got it (cannot be auto-detected).")
+            return
+        end
+        if r.k == "shop" and attempt >= 3 then
+            Items.setStatus("Could not buy " .. r.n .. " (money? wrong NPC?). Record 'Get: " .. r.n .. "' in Spy while buying it by hand.")
+            return
+        end
+        task.wait(1)
+    end
+    Items.setStatus("Stopped after " .. S.ItemAttempts .. " attempts.")
+end
+
+function Items.start()
+    local r = Items.byLabel(S.ItemSel)
+    if not r then
+        Hub.note("item", "Pick an item first.", "bad")
+        if UI.toggles.ItemRun then UI.toggles.ItemRun.Set(false, true) end
+        return
+    end
+    if Items.running then return end
+    Items.running = true
+    Items.token = Items.token + 1
+    local my = Items.token
+    task.spawn(function()
+        local ok, err = pcall(Items.run, r, my)
+        if not ok then
+            Hub.err("items", err)
+            Items.setStatus("Error: " .. tostring(err))
+        end
+        if Items.token == my then
+            Items.running = false
+            if UI.toggles.ItemRun then UI.toggles.ItemRun.Set(false, true) end
+        end
+        Items.engageFarm(false)
+        Mover.release("items")
+    end)
+end
+
+function Items.stop()
+    Items.token = Items.token + 1
+    Items.running = false
+    Items.engageFarm(false)
+    Mover.release("items")
+    Items.setStatus("Stopped.")
+end
+
+----------------------------------------------------------------------
+-- auto prestige
+----------------------------------------------------------------------
+Prestige.busy, Prestige.nextTry, Prestige.lastTry = false, 0, 0
+
+function Prestige.required()
+    if S.PrestigeLevel > 0 then return S.PrestigeLevel end
+    local r = DB.prestige[S.PrestigeRank + 1]
+    if r then return r end
+    return DB.prestige[#DB.prestige] + 400 * (S.PrestigeRank + 1 - #DB.prestige)
+end
+
+function Prestige.findNPC()
+    Quest.scan()
+    local root = Util.root()
+    local best, bd
+    for _, c in ipairs(Quest.prompts) do
+        if c.hasModel and (Util.nameHas(c.name, "prestige") or Util.nameHas(c.label, "prestige") or Util.nameHas(c.name, "overseer")) then
+            local d = root and (c.pos - root.Position).Magnitude or 0
+            if not bd or d < bd then best, bd = c, d end
+        end
+    end
+    return best
+end
+
+function Prestige.run()
+    if Prestige.busy then return end
+    Prestige.busy = true
+    Prestige.lastTry = os.clock()
+    Mover.release("farm")
+    Farm.target = nil
+    local lvl0 = Util.playerLevel()
+    Hub.status = "Prestige: starting..."
+    local ok, err = pcall(function()
+        if Spy.macros["Prestige"] then
+            Hub.status = "Prestige: replaying your macro"
+            Spy.play("Prestige")
+            return
+        end
+        local c = Prestige.findNPC()
+        if not c then
+            Hub.status = "Prestige: going to Legacy Island..."
+            TP.toIsland("Legacy Island")
+            task.wait(3)
+            c = Prestige.findNPC()
+        end
+        if not c then error("Prestige Overseer not found (walk to Legacy Island once, or record a 'Prestige' macro in Spy)") end
+        Hub.status = "Prestige: walking to " .. c.name
+        if not Items.goNPC(c) then error("could not reach " .. c.name) end
+        Hub.status = "Prestige: talking to " .. c.name
+        Items.talk(c, { "prestige", "confirm", "yes", "accept", "rank", "ascend" }, nil, { "prestige" })
+    end)
+    task.wait(2.5)
+    local lvl1 = Util.playerLevel()
+    if lvl0 and lvl1 and lvl1 < lvl0 - 5 then
+        S.PrestigeRank = S.PrestigeRank + 1
+        Hub.dirty()
+        Prestige.nextTry = 0
+        if UI.sliders.PrestigeRank then UI.sliders.PrestigeRank.Set(S.PrestigeRank, true) end
+        Hub.note("prest", "Prestige done! Rank " .. S.PrestigeRank .. ". Back to farming.", "ok")
+    else
+        Prestige.nextTry = os.clock() + (lvl0 and 240 or S.PrestigeEvery * 60)
+        if not ok then
+            Hub.err("prestige", err)
+            Hub.note("prest", "Prestige: " .. tostring(err), "bad")
+        else
+            Hub.note("prest", "Prestige not accepted yet (requirements?). Will retry later.", "bad")
+        end
+    end
+    Prestige.busy = false
+    Hub.status = "Idle"
+end
+
+Hub.loop("prestige", function()
+    if not S.AutoPrestige or Hub.paused or Items.running or Prestige.busy then return 2 end
+    local lvl = Util.playerLevel()
+    local now = os.clock()
+    local due
+    if lvl then
+        due = lvl >= Prestige.required() and now >= Prestige.nextTry
+    else
+        due = now >= Prestige.nextTry and now - Prestige.lastTry > S.PrestigeEvery * 60
+    end
+    if due then Prestige.run() end
+    return 3
+end)
+
+
+
+----------------------------------------------------------------------
+-- extra pages: Items, Auto (prestige / boss), Spy
+----------------------------------------------------------------------
+function UI.pagesItems()
+    local p = UI.addTab("Items")
+    p:Section("Auto-Items")
+    p:Paragraph("Pick Auto-<item> and turn the switch on. The hub buys it from the NPC, or farms the boss / questline that gives it, and stops when the item is in your backpack. Specs and abilities cannot be detected, so those stop after one full cycle. If it cannot figure a step out, record the real steps once in the Spy tab as 'Get: <item>'.")
+    local info
+    p:Dropdown("Item", "ItemSel", Items.labels, function() info.Set(Items.describe(S.ItemSel)) end)
+    info = p:Paragraph(Items.describe(S.ItemSel))
+    p:Toggle("Run Auto-Item", "ItemRun", function(on)
+        if on then Items.start() else Items.stop() end
+    end)
+    p:Slider("Max attempts", "ItemAttempts", 3, 60, 1)
+    local st = p:Paragraph("Idle.")
+    local idx, last = #UI.tabs, ""
+    UI.hook(function()
+        if UI.current == idx and Items.statusText ~= last then
+            last = Items.statusText
+            st.Set(last)
+        end
+    end)
+end
+
+function UI.pagesAuto()
+    local p = UI.addTab("Auto")
+    p:Section("Auto Prestige")
+    p:Paragraph("When your level reaches the requirement, the hub goes to the Prestige Overseer on Legacy Island, confirms, then goes back to farming. Set 'Prestige rank done' to the rank you already have (0 = none). A macro named 'Prestige' recorded in Spy is used instead of walking.")
+    p:Toggle("Auto Prestige", "AutoPrestige", function(on)
+        if on then
+            Prestige.lastTry = os.clock()
+            Prestige.nextTry = 0
+        end
+    end)
+    p:Slider("Prestige rank done", "PrestigeRank", 0, 24, 1)
+    p:Slider("Prestige at level (0 = auto)", "PrestigeLevel", 0, 11300, 50)
+    p:Slider("Retry every (no level info)", "PrestigeEvery", 2, 30, 1, " min")
+    p:Button("Prestige now", function() task.spawn(Prestige.run) end, true)
+    p:Section("Auto Boss")
+    p:Paragraph("Fights the selected boss whenever it is spawned (it has priority over normal mobs). It can travel to the boss island first. Gojo / Sukuna also auto-spawn; manual summons use the summoner NPC (boss tickets) or your 'Summon: <boss>' macro.")
+    p:Toggle("Auto Boss", "AutoBoss", function(on)
+        if not on then Mobs.want = nil end
+    end)
+    p:Dropdown("Boss", "BossSel", Boss.labels)
+    p:Toggle("Travel to the boss island", "BossIsland")
+    p:Button("Summon selected boss", function()
+        task.spawn(function()
+            local b = DB.boss(S.BossSel)
+            if not b then
+                Hub.note("sum", "Pick a specific boss first.", "bad")
+                return
+            end
+            Hub.note("sum", Boss.summon(b[1], b[2]) and "Summon sent." or "No summoner NPC / macro found.", "force")
+        end)
+    end)
+end
+
+function UI.pagesSpy()
+    local p = UI.addTab("Spy")
+    p:Section("Remote Spy")
+    p:Paragraph("Shows what the game sends to the server. Turn it on, use the game (buy something, open the island teleport, prestige...), then read or copy the log. Needs hookmetamethod or hookfunction on your executor.")
+    p:Toggle("Remote Spy", "SpyOn", function(on) Spy.setOn(on) end)
+    p:Toggle("Hide noisy remotes", "SpyQuiet")
+    local log = p:Paragraph(Spy.text(25))
+    p:Button("Copy log", function()
+        if X.clip then
+            pcall(X.clip, Spy.text(150))
+            Hub.note("copy", "Spy log copied.", "ok")
+        else
+            Hub.note("copy", "This executor has no clipboard function.", "bad")
+        end
+    end)
+    p:Button("Clear log", function()
+        Spy.log = {}
+        Spy.muted = {}
+        log.Set(Spy.text(25))
+    end)
+    p:Section("Record & replay")
+    p:Paragraph("Type a name, press Record, then do the action once in the game. Special names: 'TP: <island>' (fast travel, shown in Teleport), 'Get: <item>' (used by Auto-Items), 'Prestige', 'Summon: <boss>'.")
+    p:Input("Macro name", "e.g. TP: Jungle Island", S.MacroName, function(t)
+        S.MacroName = t
+        Hub.dirty()
+    end)
+    p:Button("Record next action (8s)", function() Spy.record(8, S.MacroName) end, true)
+    local minfo
+    p:Dropdown("Macros", "MacroSel", Spy.macroNames, function(v) minfo.Set(Spy.describe(v)) end)
+    minfo = p:Paragraph("No macro selected.")
+    p:Button("Play selected macro", function()
+        task.spawn(function()
+            local n = Spy.play(S.MacroSel)
+            Hub.note("play", "Fired " .. n .. " call(s).", "ok")
+        end)
+    end)
+    p:Button("Delete selected macro", function()
+        Spy.delete(S.MacroSel)
+        S.MacroSel = "(none)"
+        if UI.dropdowns.MacroSel then UI.dropdowns.MacroSel.Set("(none)", true) end
+        minfo.Set("Deleted.")
+    end)
+    local idx, lastN, lastT = #UI.tabs, -1, 0
+    UI.hook(function(dt, t)
+        if UI.current == idx and t - lastT > 0.7 then
+            lastT = t
+            if Spy.count ~= lastN then
+                lastN = Spy.count
+                log.Set(Spy.text(25))
+            end
+        end
+    end)
+end
+
+
+
+----------------------------------------------------------------------
+-- pages
+----------------------------------------------------------------------
+function UI.buildPages()
     ------------------------------------------------------------ FARM
     local p = UI.addTab("Farm")
     p:Section("Auto Farm")
@@ -3033,15 +4473,29 @@ function UI.buildPages()
         Farm.spot = nil
     end)
     p:Dropdown("Farm Position", "FarmPos", function() return { "Above", "Behind", "Front" } end)
-    p:Slider("Farm Distance", "FarmDist", 3, 40, 1, " st")
-    p:Slider("Travel Speed", "TravelSpeed", 60, 260, 5, " st/s")
+    p:Slider("Farm Distance", "FarmDist", 2, 40, 1, " st")
+    p:Slider("Travel Speed", "TravelSpeed", 20, 260, 5, " st/s")
+    p:Dropdown("Movement", "MoveMode", function() return { "Auto", "Glide", "Walk" } end, function() Mover.reset() end)
+    p:Button("Reset movement tuning", function()
+        Mover.reset()
+        Hub.note("mv", "Movement tuning reset.", "ok")
+    end)
 
     p:Section("Combat")
     p:Toggle("Auto Attack", "AutoAttack")
     p:Dropdown("Attack Method", "AttackMethod", function()
-        return { "Auto", "Tool", "Click", "Button", "VirtualUser" }
+        return { "Auto", "Tool", "Click", "Touch", "Button", "VirtualUser" }
     end, function() Attack.watch = {} end)
     p:Slider("Attack Speed", "CPS", 1, 14, 1, " cps")
+    local atest = p:Paragraph("Attack test: not run yet. Stand near mobs with your weapon in the backpack, then press the button.")
+    p:Button("Test attack methods", function()
+        task.spawn(function()
+            atest.Set("Testing every attack method on the nearest mob (about 20 seconds)...")
+            local r = Attack.test()
+            atest.Set("Attack test: " .. r)
+            Hub.note("atest", "Attack test finished.", "ok")
+        end)
+    end, true)
     p:Chips("Auto Skills", {
         { label = "Z", key = "SkillZ" }, { label = "X", key = "SkillX" }, { label = "C", key = "SkillC" },
         { label = "V", key = "SkillV" }, { label = "G", key = "SkillG" },
@@ -3107,9 +4561,11 @@ function UI.buildPages()
     end)
 
     -------------------------------------------------------- TELEPORT
+    UI.pagesItems()
+    UI.pagesAuto()
     local t = UI.addTab("Teleport")
     t:Section("Safe teleport")
-    t:Paragraph("Glides you there at a capped speed with noclip, then drops you on the ground. No instant snapping, so the server does not drag you back. Auto Farm / Quest switch off while you travel.")
+    t:Paragraph("Glides you there at a capped speed (it slows itself down if the server pulls you back, then falls back to real walking; see Movement in the Farm tab). Auto Farm / Quest switch off while you travel.")
     t:Button("Rescan map (islands, NPCs)", function()
         task.spawn(function()
             Quest.scan()
@@ -3117,10 +4573,28 @@ function UI.buildPages()
             Hub.note("poi", "Map scanned: " .. #POI.islands .. " places, " .. #POI.npcs .. " NPCs.", "ok")
         end)
     end)
-    t:Dropdown("Island / Spawn", "TPIsland", function() return POI.names(POI.islands) end)
+    t:Dropdown("Island / Spawn", "TPIsland", function()
+        local seen, out = {}, {}
+        local function add(n)
+            if not seen[n] then
+                seen[n] = true
+                out[#out + 1] = n
+            end
+        end
+        for mname in pairs(Spy.macros) do
+            if mname:sub(1, 4) == "TP: " then add(mname:sub(5)) end
+        end
+        for _, i in ipairs(DB.islands) do add(i[1]) end
+        for _, n in ipairs(POI.names(POI.islands)) do add(n) end
+        return out
+    end)
     t:Button("Teleport to island", function()
         local pt = POI.find(POI.islands, S.TPIsland)
-        TP.go(pt and pt.pos, S.TPIsland)
+        if pt and not Spy.macros["TP: " .. S.TPIsland] then
+            TP.go(pt.pos, S.TPIsland)
+        else
+            TP.islandGo(S.TPIsland)
+        end
     end, true)
     t:Dropdown("NPC", "TPNPC", function() return POI.names(POI.npcs) end)
     t:Button("Teleport to NPC", function()
@@ -3148,6 +4622,7 @@ function UI.buildPages()
     t:Toggle("Instant teleport (risky)", "InstantTP")
 
     ----------------------------------------------------------- MISC
+    UI.pagesSpy()
     local m = UI.addTab("Misc")
     m:Section("Safety")
     m:Toggle("Safe Mode (human-like limits)", "SafeMode")
@@ -3219,12 +4694,7 @@ function UI.buildPages()
     end)
     st:Section("Config")
     st:Button("Save settings now", function()
-        local saved = Cfg.save()
-        if saved then
-            Hub.note("cfg", "Settings saved.", "ok")
-        else
-            Hub.note("cfg", "Could not save. Check executor file permissions.", "bad")
-        end
+        Hub.note("cfg", Cfg.save() and "Settings saved." or "Could not save (no file access).", Cfg.save and "ok" or "bad")
     end)
     st:Button("Load saved settings", function()
         if Cfg.load() then
@@ -3436,6 +4906,7 @@ local function stage(name, fn, ...)
 end
 
 Cfg.load()
+Spy.load()
 local builtOk = stage("ui", UI.build)
 if builtOk then
     stage("pages", UI.buildPages)
@@ -3483,22 +4954,3 @@ if builtOk then
 else
     warn("[MillieHub] the interface could not be built; check Hub.errors via the executor console.")
 end
-Util.rand(2.4, 5.5)
-end)
-
--- learn the world in the background (mobs, prompts, islands) and name the game in the header
-task.spawn(function()
-    task.wait(1)
-    stage("scan", function()
-        Mobs.scanAll()
-        Quest.scan()
-        POI.scan()
-    end)
-end)
-task.spawn(function()
-    local ok, name = pcall(function() return MarketplaceService:GetProductInfo(game.PlaceId).Name end)
-    if ok and type(name) == "string" and UI.subtitle then
-        if name:lower():find("legacy", 1, true) then
-            UI.subtitle.Text = "Legacy Piece  |  v" .. CFG.VERSION
-        else
-            UI.su
