@@ -1,5 +1,5 @@
 --[[
-    MILLIE HUB  -  "Millie lazy"  v2.0   (Legacy Piece edition)
+    MILLIE HUB  -  "Millie lazy"  v3.1   (Legacy Piece edition)
     Built for mobile executors (Delta). One file, no external dependencies.
 
     Password ............ Millielover
@@ -12,13 +12,14 @@
     * Nothing here is "ban proof". Safe Mode keeps speeds, click rates and
       movement human-looking; use an alt account.
     * Legacy Piece changes its internals often, so mobs / quest NPCs / attack
-      buttons are DISCOVERED at runtime instead of hard-coded. The Scanner tab
-      shows exactly what was found and the last error of every module.
+      buttons are DISCOVERED at runtime. StreamingEnabled limits discovery to
+      objects currently replicated to this client; the Scanner shows that scope
+      and the last error of every module.
 ]]
 
 local CFG = {
     KEY = "Millielover",
-    VERSION = "3.0",
+    VERSION = "3.1",
     FOLDER = "MillieHub",
     MILLIE_IMAGE_URL = "", -- optional direct png/jpg link (overrides the embedded art)
 }
@@ -260,45 +261,38 @@ function Util.groundY(pos)
     return nil
 end
 
-function Util.tapGui(btn)
-    if not VIM then return false end
-    local inset = 0
-    local sg = btn:FindFirstAncestorOfClass("ScreenGui")
-    if sg and sg.IgnoreGuiInset == false then
-        local okI, tl = pcall(function() return GuiService:GetGuiInset() end)
-        if okI and tl then inset = tl.Y end
-    end
-    local p, s = btn.AbsolutePosition, btn.AbsoluteSize
-    local x, y = p.X + s.X / 2, p.Y + s.Y / 2 + inset
-    pcall(function() VIM:SendMouseButtonEvent(x, y, 0, true, game, 0) end)
-    task.wait(0.05)
-    pcall(function() VIM:SendMouseButtonEvent(x, y, 0, false, game, 0) end)
-    return true
-end
-
+-- UI automation must never leave a synthetic mouse/touch button held.
+-- Use the button's activation signal only; no screen-coordinate clicks.
 function Util.fireButton(btn)
+    if not btn or not btn:IsA("GuiButton") then return false end
+    if not btn.Parent or not btn.Visible or not Util.guiVisible(btn) then return false end
+
+    -- Prefer the executor's signal dispatcher: it invokes the Activated
+    -- subscribers as a group instead of arbitrarily firing only one callback.
+    if X.firesignal then
+        local ok = pcall(function() X.firesignal(btn.Activated) end)
+        if ok then return true end
+    end
+
+    -- Compatibility fallback for executors without firesignal. Run each
+    -- connected callback; some buttons have separate UI and game listeners.
     if X.getconns then
-        for _, sigName in ipairs({ "Activated", "MouseButton1Click", "MouseButton1Down" }) do
-            local ok, conns = pcall(function() return X.getconns(btn[sigName]) end)
-            if ok and type(conns) == "table" then
-                local fired = false
-                for _, c in ipairs(conns) do
-                    local ok2 = pcall(function() c:Fire() end)
-                    if ok2 then fired = true end
-                end
-                if fired then return true end
+        local ok, conns = pcall(function() return X.getconns(btn.Activated) end)
+        if ok and type(conns) == "table" then
+            local fired = false
+            for _, c in ipairs(conns) do
+                local okFire = pcall(function() c:Fire() end)
+                fired = fired or okFire
             end
+            if fired then return true end
         end
     end
-    local sig = false
-    if X.firesignal then
-        local a = pcall(function() X.firesignal(btn.Activated) end)
-        local b = pcall(function() X.firesignal(btn.MouseButton1Click) end)
-        sig = a or b
-    end
-    -- no listener we could trigger directly: tap the button like a finger would
-    if VIM and Util.tapGui(btn) then return true end
-    return sig
+    return false
+end
+
+-- Kept for older modules, but deliberately does not synthesize a mouse click.
+function Util.tapGui(btn)
+    return Util.fireButton(btn)
 end
 
 function Util.firePrompt(prompt)
@@ -1341,14 +1335,14 @@ end
 -- forward declarations (all modules exist before any function body is compiled)
 ----------------------------------------------------------------------
 local Prompts = { set = setmetatable({}, { __mode = "k" }) }
-local Mobs = { set = {}, known = {}, cache = nil, cacheT = 0 }
+local Mobs = { set = {}, known = {}, pending = setmetatable({}, { __mode = "k" }), cache = nil, cacheT = 0 }
 Mobs.black = setmetatable({}, { __mode = "k" })
 Mobs.retry = setmetatable({}, { __mode = "k" })
 local Mover = { intent = nil, owner = nil, bv = nil }
 local Equip = { lastKey = 0 }
 local Attack = { methods = { "tool", "click", "button", "vuser" }, idx = 1, watch = {}, btn = nil, btnT = 0 }
 local Farm = { target = nil, spot = nil, spotOff = 0 }
-local Quest = { prompts = {}, last = 0, first = false, progT = 0, progV = "none", info = "No quest run yet." }
+local Quest = { prompts = {}, last = 0, first = false, doneConsumed = false, progT = 0, progV = "none", info = "No quest run yet." }
 local POI = { islands = {}, npcs = {} }
 local TP = {}
 local Misc = {}
@@ -1465,6 +1459,13 @@ function Mobs.parseLevel(model, hum)
         local n = s:match("[Ll][Vv][Ll]?[%.%s:]*(%d+)") or s:match("[Ll]evel[%s:]*(%d+)") or s:match("%[(%d+)%]")
         if n then return tonumber(n) end
     end
+    -- Fallbacks are limited to the matching experience PlaceId; never apply
+    -- a public level list to a different game with similarly named enemies.
+    if DB.mobLevelsPlaceId == game.PlaceId and type(DB.mobLevels) == "table" then
+        local key = model.Name:lower():gsub("[^%w]+", " "):gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+        local fallback = DB.mobLevels[key]
+        if type(fallback) == "number" then return fallback end
+    end
     return nil
 end
 
@@ -1473,8 +1474,21 @@ function Mobs.looksLikeNPC(model)
     for _, w in ipairs(NPC_WORDS) do
         if l:find(w, 1, true) then return true end
     end
-    if model:FindFirstChildWhichIsA("ProximityPrompt", true) or model:FindFirstChildWhichIsA("ClickDetector", true) then
-        return true
+
+    -- Use prompt intent, not prompt existence. A mob/boss can also have a prompt.
+    local prompt = model:FindFirstChildWhichIsA("ProximityPrompt", true)
+    if prompt then
+        local action = (tostring(prompt.ActionText or "") .. " " .. tostring(prompt.ObjectText or "")):lower()
+        if action:find("attack", 1, true) or action:find("fight", 1, true)
+            or action:find("challenge", 1, true) or action:find("boss", 1, true) then
+            return false
+        end
+        if action:find("talk", 1, true) or action:find("interact", 1, true)
+            or action:find("quest", 1, true) or action:find("shop", 1, true)
+            or action:find("buy", 1, true) or action:find("sell", 1, true)
+            or action:find("claim", 1, true) or action:find("spawn", 1, true) then
+            return true
+        end
     end
     return false
 end
@@ -1516,6 +1530,50 @@ function Mobs.scanAll()
     end
 end
 
+-- Keep the registry current after the initial scan. This also catches NPCs
+-- that are streamed in later when the player moves to another island.
+local function queueMobModel(model)
+    if not model or not model:IsA("Model") or Mobs.pending[model] then return end
+    Mobs.pending[model] = true
+    task.defer(function()
+        Mobs.pending[model] = nil
+        if not Hub.alive or not model.Parent or not model:IsDescendantOf(Workspace) then return end
+        local hum = model:FindFirstChildOfClass("Humanoid")
+        if hum then Mobs.register(hum) end
+    end)
+end
+
+Hub.track(Workspace.DescendantAdded:Connect(function(d)
+    if not Hub.alive then return end
+    if d:IsA("ProximityPrompt") then
+        Prompts.set[d] = true
+    elseif d:IsA("Humanoid") then
+        queueMobModel(d.Parent)
+    elseif d:IsA("BasePart") then
+        queueMobModel(d:FindFirstAncestorOfClass("Model"))
+    end
+end))
+
+Hub.track(Workspace.DescendantRemoving:Connect(function(d)
+    if d:IsA("ProximityPrompt") then
+        Prompts.set[d] = nil
+    elseif d:IsA("Humanoid") then
+        local model = d.Parent
+        local entry = model and Mobs.set[model]
+        if entry and entry.hum == d then
+            Mobs.set[model] = nil
+            Mobs.cache = nil
+        end
+    elseif d:IsA("BasePart") then
+        local model = d:FindFirstAncestorOfClass("Model")
+        local entry = model and Mobs.set[model]
+        if entry and entry.root == d then
+            Mobs.set[model] = nil
+            Mobs.cache = nil
+        end
+    end
+end))
+
 function Mobs.isAlive(e)
     return e ~= nil and e.model.Parent ~= nil and e.hum.Parent ~= nil and e.root.Parent ~= nil
         and e.hum.Health > 0 and os.clock() >= (Mobs.black[e.model] or 0)
@@ -1526,9 +1584,11 @@ function Mobs.alive()
     if Mobs.cache and now - Mobs.cacheT < 0.2 then return Mobs.cache end
     local out = {}
     for model, e in pairs(Mobs.set) do
-        if not model.Parent then
+        if not model.Parent or not e.hum.Parent or not e.root.Parent then
             Mobs.set[model] = nil
-        elseif e.hum.Parent and e.root.Parent and e.hum.Health > 0 then
+            Mobs.cache = nil
+        elseif e.hum.Health > 0 then
+            if not e.level then e.level = Mobs.parseLevel(e.model, e.hum) end
             if now >= (Mobs.black[model] or 0) then out[#out + 1] = e end
             local k = Mobs.known[e.base]
             if not k then
@@ -1539,6 +1599,9 @@ function Mobs.alive()
             k.pos = e.root.Position
             k.seen = now
             if not e.npc then k.npc = false end
+        else
+            Mobs.set[model] = nil
+            Mobs.cache = nil
         end
     end
     Mobs.cache, Mobs.cacheT = out, now
@@ -1549,6 +1612,10 @@ function Mobs.names()
     Mobs.alive()
     local out = { AUTO_NEAREST, AUTO_LEVEL }
     local arr = {}
+    local now = os.clock()
+    for base, k in pairs(Mobs.known) do
+        if not k.seen or now - k.seen > 180 then Mobs.known[base] = nil end
+    end
     for base, k in pairs(Mobs.known) do
         if not k.npc then arr[#arr + 1] = base end
     end
@@ -1566,8 +1633,10 @@ function Mobs.bestBaseForLevel()
     local pl = Util.playerLevel()
     if not pl then return nil end
     local best, bl = nil, -1
+    local now = os.clock()
     for base, k in pairs(Mobs.known) do
-        if not k.npc and k.level and k.level <= pl + 3 and k.level > bl then
+        local fresh = k.seen and (now - k.seen) <= 45
+        if fresh and not k.npc and k.level and k.level <= pl + 3 and k.level > bl then
             best, bl = base, k.level
         end
     end
@@ -1578,10 +1647,11 @@ function Mobs.pick()
     local root = Util.root()
     if not root then return nil end
     local p = root.Position
+    local alive = Mobs.alive()
     local w = Mobs.want
     if w then
         local wb, wd = nil, math.huge
-        for _, e in ipairs(Mobs.alive()) do
+        for _, e in ipairs(alive) do
             if Util.nameMatchAny(e.model.Name, w.patterns) or Util.nameMatchAny(e.base, w.patterns) then
                 local d = (e.root.Position - p).Magnitude
                 if d < wd then wb, wd = e, d end
@@ -1589,19 +1659,41 @@ function Mobs.pick()
         end
         if wb or w.exclusive then return wb end
     end
+
     local sel = S.TargetMob
-    local want = nil
-    if sel == AUTO_LEVEL then want = Mobs.bestBaseForLevel() end
-    local best, bd = nil, math.huge
-    for _, e in ipairs(Mobs.alive()) do
-        local ok
-        if sel == AUTO_NEAREST or (sel == AUTO_LEVEL and want == nil) then
-            ok = not e.npc
-        elseif sel == AUTO_LEVEL then
-            ok = (e.base == want)
-        else
-            ok = (e.base == sel)
+    if sel == AUTO_LEVEL then
+        local pl = Util.playerLevel()
+        local best, bestLevel, bestDistance = nil, -math.huge, math.huge
+        local hasLevelData = false
+        if pl then
+            for _, e in ipairs(alive) do
+                if not e.npc and e.level then
+                    hasLevelData = true
+                    if e.level <= pl + 3 then
+                        local d = (e.root.Position - p).Magnitude
+                        if e.level > bestLevel or (e.level == bestLevel and d < bestDistance) then
+                            best, bestLevel, bestDistance = e, e.level, d
+                        end
+                    end
+                end
+            end
         end
+        if best then return best end
+        -- When levels are readable, do not blindly attack a mob far above the player.
+        -- Unknown-level mobs remain a fallback; if nothing is readable, use nearest.
+        local nearest, nd = nil, math.huge
+        for _, e in ipairs(alive) do
+            if not e.npc and (not pl or not hasLevelData or not e.level) then
+                local d = (e.root.Position - p).Magnitude
+                if d < nd then nearest, nd = e, d end
+            end
+        end
+        return nearest
+    end
+
+    local best, bd = nil, math.huge
+    for _, e in ipairs(alive) do
+        local ok = (sel == AUTO_NEAREST and not e.npc) or (sel ~= AUTO_NEAREST and e.base == sel)
         if ok then
             local d = (e.root.Position - p).Magnitude
             if d < bd then best, bd = e, d end
@@ -1931,10 +2023,13 @@ end)
 ----------------------------------------------------------------------
 -- attack (adaptive: tries several input methods and keeps the one that lowers mob health)
 ----------------------------------------------------------------------
-Attack.methods = { "tool", "click", "touch", "button", "vuser" }
+-- Auto attack is intentionally restricted to non-coordinate input methods.
+-- Synthetic mouse/touch and VirtualUser were the source of stuck mobile clicks.
+Attack.methods = { "tool", "button" }
 Attack.stats = {}
-local METHOD_BY_NAME = { Tool = "tool", Click = "click", Touch = "touch", Button = "button", VirtualUser = "vuser" }
-local NAME_BY_METHOD = { tool = "Tool", click = "Click", touch = "Touch", button = "Button", vuser = "VirtualUser" }
+Attack.lastMethodSwitch = 0
+local METHOD_BY_NAME = { Tool = "tool", Button = "button" }
+local NAME_BY_METHOD = { tool = "Tool", button = "Button" }
 
 -- health of a mob (Humanoid, or an attribute / value some games use instead)
 function Mobs.hp(e)
@@ -1963,20 +2058,30 @@ function Mobs.hp(e)
 end
 
 function Attack.findButton()
-    if Attack.btn and Attack.btn.Parent and os.clock() - Attack.btnT < 4 then return Attack.btn end
+    if Attack.btn and Attack.btn.Parent and Attack.btn.Visible and os.clock() - Attack.btnT < 3 then
+        return Attack.btn
+    end
     Attack.btnT = os.clock()
     Attack.btn = nil
     local pg = LP:FindFirstChild("PlayerGui")
     if not pg then return nil end
+
+    local exact = {
+        m1 = true, attack = true, combat = true, punch = true,
+        m1button = true, attackbutton = true, combatbutton = true,
+        mobileattack = true, mobilecombat = true,
+    }
+    local function norm(v)
+        return tostring(v or ""):lower():gsub("[^%w]", "")
+    end
     local n = 0
     for _, d in ipairs(pg:GetDescendants()) do
         n = n + 1
         if n % 700 == 0 then task.wait() end
-        if d:IsA("GuiButton") and d.Visible then
-            local nm = d.Name:lower()
-            local tx = d:IsA("TextButton") and d.Text:lower() or ""
-            if (nm == "m1" or nm:find("attack", 1, true) or nm:find("punch", 1, true) or tx == "m1" or tx:find("attack", 1, true))
-                and Util.guiVisible(d) then
+        if d:IsA("GuiButton") and d.Visible and d.Active and Util.guiVisible(d) then
+            local nm = norm(d.Name)
+            local tx = norm(d:IsA("TextButton") and d.Text or "")
+            if exact[nm] or exact[tx] then
                 Attack.btn = d
                 break
             end
@@ -1998,45 +2103,27 @@ end
 
 function Attack.swing()
     local m
-    if S.AttackMethod == "Auto" then m = Attack.methods[Attack.idx] else m = METHOD_BY_NAME[S.AttackMethod] or "tool" end
+    if S.AttackMethod == "Auto" then
+        m = Attack.methods[Attack.idx]
+    else
+        m = METHOD_BY_NAME[S.AttackMethod] or "tool"
+    end
+
     if m == "tool" then
         local t = Equip.current()
-        if t then
-            t:Activate()
-            return true
-        end
-        return false
-    elseif m == "click" then
-        if not VIM then return false end
-        local x, y = Util.freeClickPoint()
-        pcall(function() VIM:SendMouseButtonEvent(x, y, 0, true, game, 0) end)
-        task.wait(Util.rand(0.02, 0.05))
-        pcall(function() VIM:SendMouseButtonEvent(x, y, 0, false, game, 0) end)
-        return true
-    elseif m == "touch" then
-        if not VIM then return false end
-        local x, y = Util.freeClickPoint()
-        local ok = pcall(function() VIM:SendTouchEvent(1, 0, x, y) end)
+        if not t or not t.Enabled then return false end
+        local ok = pcall(function() t:Activate() end)
         if not ok then return false end
-        task.wait(Util.rand(0.03, 0.07))
-        pcall(function() VIM:SendTouchEvent(1, 2, x, y) end)
+        -- Explicitly close the activation window; this is not a mouse/touch hold.
+        task.delay(0.04, function()
+            if t and t.Parent == LP.Character then
+                pcall(function() t:Deactivate() end)
+            end
+        end)
         return true
     elseif m == "button" then
         local b = Attack.findButton()
-        if not b then return false end
-        if VIM then return Util.tapGui(b) end
-        return Util.fireButton(b)
-    elseif m == "vuser" then
-        if not VirtualUser then return false end
-        local cam = Workspace.CurrentCamera
-        local cf = cam and cam.CFrame or CFrame.new()
-        pcall(function()
-            VirtualUser:CaptureController()
-            VirtualUser:Button1Down(Vector2.new(0, 0), cf)
-        end)
-        task.wait(Util.rand(0.02, 0.05))
-        pcall(function() VirtualUser:Button1Up(Vector2.new(0, 0), cf) end)
-        return true
+        return b and Util.fireButton(b) or false
     end
     return false
 end
@@ -2057,7 +2144,10 @@ function Attack.step(t)
         Attack.stats[m] = st
     end
     if not Attack.swing() then
-        if S.AttackMethod == "Auto" then Attack.idx = Attack.idx % #Attack.methods + 1 end
+        if S.AttackMethod == "Auto" and os.clock() - (Attack.lastMethodSwitch or 0) >= 0.75 then
+            Attack.idx = Attack.idx % #Attack.methods + 1
+            Attack.lastMethodSwitch = os.clock()
+        end
         return false
     end
     st.tries = st.tries + 1
@@ -2070,11 +2160,17 @@ function Attack.step(t)
         w.n = 0
         w.total = 0
         Attack.good = m
-    elseif w.n >= 10 then
-        w.n = 0
         if S.AttackMethod == "Auto" then
+            for i, method in ipairs(Attack.methods) do
+                if method == m then Attack.idx = i break end
+            end
+        end
+    elseif w.n >= 8 then
+        w.n = 0
+        if S.AttackMethod == "Auto" and os.clock() - (Attack.lastMethodSwitch or 0) >= 0.75 then
             Attack.idx = Attack.idx % #Attack.methods + 1
-            Hub.note("attack", "No damage yet - trying attack method: " .. Attack.methods[Attack.idx])
+            Attack.lastMethodSwitch = os.clock()
+            Hub.note("attack", "No damage confirmed - trying safe method: " .. Attack.methods[Attack.idx])
         end
     end
     if Farm.spot and w.total >= 20 then
@@ -2102,48 +2198,51 @@ function Attack.test()
     if not t then return "No mob found within 150 studs. Walk near some mobs first." end
     Hub.stopAutomation("attack test")
     Attack.testing = true
+    local saved = S.AttackMethod
+    local chosen = nil
     local ok, res = pcall(function()
         Equip.ensure()
-        task.wait(0.4)
+        task.wait(0.35)
         local tp = t.root.Position
         local stand = Vector3.new(tp.X, tp.Y, tp.Z - 4)
-        Mover.travel("test", CFrame.lookAt(stand, tp), S.TravelSpeed)
-        task.wait(0.4)
-        local results, first = {}, nil
-        local saved = S.AttackMethod
+        Mover.travel("test", CFrame.lookAt(stand, tp), math.min(S.TravelSpeed, 45), 12)
+        task.wait(0.25)
+        local results = {}
         for _, m in ipairs(Attack.methods) do
             if not Mobs.isAlive(t) then t = Mobs.nearestWithin(40) end
             if not t then break end
             S.AttackMethod = NAME_BY_METHOD[m]
-            local hp0, sent = Mobs.hp(t), 0
-            for _ = 1, 7 do
+            local sent, hit = 0, false
+            for _ = 1, 5 do
+                if not Mobs.isAlive(t) then break end
+                local hp0 = Mobs.hp(t)
                 Attack.face(t)
                 if Attack.swing() then sent = sent + 1 end
-                task.wait(0.28)
+                task.wait(0.32)
+                if Mobs.isAlive(t) and Mobs.hp(t) < hp0 - 0.001 then hit = true break end
+                if not Mobs.isAlive(t) then hit = true break end
             end
-            task.wait(0.5)
-            local hit = (not Mobs.isAlive(t)) or Mobs.hp(t) < hp0 - 0.001
-            results[#results + 1] = m .. "=" .. (sent == 0 and "n/a" or (hit and "YES" or "no"))
-            if hit and sent > 0 and not first then first = m end
+            results[#results + 1] = m .. "=" .. (sent == 0 and "unavailable" or (hit and "HIT" or "no damage"))
+            if sent > 0 and hit then chosen = m break end
         end
-        S.AttackMethod = saved
-        local summary = table.concat(results, "  ")
-        if first then
-            local nm = NAME_BY_METHOD[first]
-            if UI.dropdowns.AttackMethod then UI.dropdowns.AttackMethod.Set(nm) else S.AttackMethod = nm end
-            Attack.good = first
-            summary = summary .. "  ->  using " .. nm
-        else
-            summary = summary .. "  ->  none damaged the mob (equip your weapon, stand next to it, then send me the Scanner report)"
+        if chosen then
+            local nm = NAME_BY_METHOD[chosen]
+            Attack.good = chosen
+            for i, method in ipairs(Attack.methods) do
+                if method == chosen then Attack.idx = i break end
+            end
+            return table.concat(results, "  ") .. "  ->  using " .. nm
         end
-        return summary
+        return table.concat(results, "  ") .. "  ->  no safe method damaged the target; check the Scanner report and weapon state."
     end)
+    S.AttackMethod = saved
     Attack.testing = false
     Mover.release("test")
     if not ok then
         Hub.err("attacktest", res)
         return "Test failed: " .. tostring(res)
     end
+    if chosen and saved == "Auto" then Attack.idx = (chosen == "button") and 2 or 1 end
     Attack.lastTest = res
     return res
 end
@@ -2186,8 +2285,10 @@ function Farm.updateSpot(t)
 end
 
 function Farm.refPos()
-    local k = Mobs.known[S.TargetMob]
-    if k and k.pos then return k.pos end
+    local base = S.TargetMob
+    if base == AUTO_LEVEL then base = Mobs.bestBaseForLevel() end
+    local k = base and Mobs.known[base]
+    if k and k.pos and k.seen and os.clock() - k.seen <= 45 then return k.pos end
     if Farm.target and Mobs.isAlive(Farm.target) then return Farm.target.root.Position end
     local r = Util.root()
     return r and r.Position or nil
@@ -2222,8 +2323,9 @@ Hub.loop("farm", function()
     end
     if not t then
         Farm.spot = nil
-        local k = Mobs.known[S.TargetMob]
-        if k and k.pos then
+        local targetBase = S.TargetMob == AUTO_LEVEL and Mobs.bestBaseForLevel() or S.TargetMob
+        local k = targetBase and Mobs.known[targetBase]
+        if k and k.pos and k.seen and os.clock() - k.seen <= 45 then
             Hub.status = "Heading to the " .. S.TargetMob .. " area..."
             local home = k.pos + Vector3.new(0, 4, 0)
             Mover.follow("farm", function() return Util.cfAt(home) end, S.TravelSpeed)
@@ -2440,7 +2542,8 @@ function Quest.scan()
                 local key = label .. string.format("%.0f,%.0f", pos.X, pos.Z)
                 if not seen[key] then
                     seen[key] = true
-                    list[#list + 1] = { prompt = d, name = nm, score = score, pos = pos, label = label, hasModel = model ~= nil }
+                    local required = text:match("[Ll][Vv][Ll]?%s*[:%-]?%s*(%d+)") or text:match("[Ll]evel%s*[:%-]?%s*(%d+)")
+                    list[#list + 1] = { prompt = d, name = nm, score = score, pos = pos, label = label, hasModel = model ~= nil, requiredLevel = required and tonumber(required) or nil }
                 end
             end
         end
@@ -2488,18 +2591,22 @@ end
 function Quest.pick()
     local list = Quest.scan()
     if #list == 0 then return nil end
+    local playerLevel = Util.playerLevel()
     if S.QuestNPC ~= AUTO_QUEST then
         for _, c in ipairs(list) do
-            if c.label == S.QuestNPC then return c end
+            if c.label == S.QuestNPC and (not c.requiredLevel or not playerLevel or c.requiredLevel <= playerLevel) then
+                return c
+            end
         end
     end
     local ref = Farm.refPos()
     local best, bs = nil, -math.huge
     for _, c in ipairs(list) do
-        if c.hasModel and (c.score >= 1 or not Quest.isShop(c.name)) then
+        local levelOK = not c.requiredLevel or not playerLevel or c.requiredLevel <= playerLevel
+        if c.hasModel and levelOK and (c.score >= 1 or not Quest.isShop(c.name)) then
             local d = ref and (c.pos - ref).Magnitude or 0
-            local s = c.score * 1000 - d
-            if s > bs then best, bs = c, s end
+            local score = c.score * 1000 - d
+            if score > bs then best, bs = c, score end
         end
     end
     return best
@@ -2555,8 +2662,10 @@ function Quest.interact(c)
         local pickB, pickScore = nil, 0
         for b, tx in pairs(now) do
             if not before[b] then
-                local sc = Quest.goodText(tx) and 2 or 1
-                if sc > pickScore then pickB, pickScore = b, sc end
+                if Quest.goodText(tx) then
+                    local sc = 2
+                    if sc > pickScore then pickB, pickScore = b, sc end
+                end
             end
         end
         if pickB then
@@ -2595,25 +2704,36 @@ function Quest.readProgress()
             n = n + 1
             if n % 700 == 0 then task.wait() end
             if d:IsA("TextLabel") and d.Visible and #d.Text < 90 then
-                local a, b = d.Text:match("(%d+)%s*/%s*(%d+)")
-                if a then
-                    local ok = false
-                    local p = d
-                    for _ = 1, 8 do
-                        if not p or p == pg then break end
-                        local nm = p.Name:lower()
-                        if nm:find("quest", 1, true) or nm:find("mission", 1, true) or nm:find("task", 1, true) or nm:find("objective", 1, true) then
-                            ok = true
-                            break
-                        end
-                        p = p.Parent
+                local inQuest = false
+                local p = d
+                for _ = 1, 8 do
+                    if not p or p == pg then break end
+                    local nm = p.Name:lower()
+                    if nm:find("quest", 1, true) or nm:find("mission", 1, true)
+                        or nm:find("task", 1, true) or nm:find("objective", 1, true) then
+                        inQuest = true
+                        break
                     end
-                    if ok then
+                    p = p.Parent
+                end
+                if inQuest then
+                    local textLower = d.Text:lower()
+                    if textLower:find("quest completed", 1, true)
+                        or textLower:find("quest complete", 1, true)
+                        or textLower:find("objective complete", 1, true)
+                        or textLower:find("mission completed", 1, true) then
+                        res = "done"
+                        break
+                    end
+                    local a, b = d.Text:match("(%d+)%s*/%s*(%d+)")
+                    if a then
                         res = "active"
                         if tonumber(b) and tonumber(b) > 0 and tonumber(a) >= tonumber(b) then
                             res = "done"
                             break
                         end
+                    elseif res == "none" then
+                        res = "active"
                     end
                 end
             end
@@ -2627,16 +2747,25 @@ function Quest.due()
     local now = os.clock()
     if Quest.first then
         Quest.first = false
+        Quest.doneConsumed = true
         return true
     end
     if now - Quest.last < 6 then return false end
     local st = Quest.readProgress()
-    if st == "done" then return true end
-    if st == "active" then return false end
+    if st == "active" then
+        Quest.doneConsumed = false
+        return false
+    end
+    if st == "done" then
+        if Quest.doneConsumed then return false end
+        Quest.doneConsumed = true
+        return true
+    end
     return now - Quest.last >= S.QuestInterval
 end
 
 function Quest.run()
+    Quest.doneConsumed = true
     Hub.status = "Quest: looking for a quest NPC..."
     local c = Quest.pick()
     Quest.last = os.clock()
@@ -2666,6 +2795,11 @@ function Quest.run()
     Quest.info = string.format("Talked to %s, pressed %d dialog button(s).", c.name, n)
     return true
 end
+
+Hub.loop("questscan", function()
+    Quest.scan()
+    return 3
+end)
 
 ----------------------------------------------------------------------
 -- map points (islands / spawns / NPCs / players) + safe teleport
@@ -2809,7 +2943,7 @@ end
 -- misc
 ----------------------------------------------------------------------
 Hub.track(LP.Idled:Connect(function()
-    if not S.AntiAFK or not VirtualUser then return end
+    if not S.AntiAFK or not VirtualUser or (UIS and UIS.TouchEnabled) then return end
     pcall(function()
         VirtualUser:CaptureController()
         VirtualUser:ClickButton2(Vector2.new(0, 0))
@@ -2988,6 +3122,7 @@ function Scan.report()
     pcall(function() gname = MarketplaceService:GetProductInfo(game.PlaceId).Name end)
     add("MILLIE HUB v" .. CFG.VERSION .. " scan")
     add("Game: " .. tostring(gname) .. "  (place " .. tostring(game.PlaceId) .. ")")
+    add("StreamingEnabled: " .. tostring(Workspace.StreamingEnabled) .. " | Scanner scope: objects currently replicated to this client")
     add(Scan.capabilities())
     add("Player level guess: " .. tostring(Util.playerLevel() or "not found"))
     local alive = Mobs.alive()
@@ -3140,11 +3275,16 @@ end
 DB.islands = {
     { "Starter Island", { "starter", "foosha", "fusha" } },
     { "Legacy Island", { "legacy" } },
+    { "Namek Island", { "namek" } },
+    { "Dandadan Island", { "dandadan" } },
+    { "Scrapyard Island", { "scrapyard" } },
+    { "Karakura Island", { "karakura" } },
     { "Jungle Island", { "jungle" } },
     { "Ice Land", { "iceland", "ice land", "ice island" } },
     { "A City", { "a city", "acity" } },
     { "Slayer Mansion", { "slayer", "mansion" } },
-    { "Jujutsu High", { "jujutsu", "jiujutsu", "jiu jitsu", "jujitsu", "academy" } },
+    { "Jujutsu Academy", { "jujutsu", "jiujutsu", "jiu jitsu", "jujitsu", "academy", "jujutsu high" } },
+    { "Jujutsu High", { "jujutsu high" } },
     { "Tokyo Ghoul Island", { "ghoul", "tokyo" } },
     { "WOO Island", { "woo", "hollow", "hueco" } },
     { "June Island", { "june" } },
@@ -3196,6 +3336,33 @@ function DB.boss(name)
     end
     return nil
 end
+
+-- Level fallback for the Gwynn's Shrine Legacy Piece experience only.
+-- Snapshot source: public wiki mirror of the game's Trello board (25 Aug 2026).
+-- Runtime Humanoid/Attribute/Value data always takes priority over this table.
+DB.mobLevelsPlaceId = 111097829542198
+DB.mobLevels = {
+    ["bandit"] = 5,
+    ["bandit leader"] = 200,
+    ["namekian"] = 250,
+    ["piccolo"] = 500,
+    ["serpoian"] = 750,
+    ["serpoian true form"] = 1000,
+    ["turbo granny"] = 1000,
+    ["beggar"] = 1350,
+    ["aristocrat"] = 1750,
+    ["dungeon demon"] = 2000,
+    ["cursed student"] = 2250,
+    ["cursed teacher"] = 2750,
+    ["hollow"] = 3250,
+    ["shinigami"] = 3850,
+    ["demon slayer"] = 4500,
+    ["cursed student high tier"] = 4500,
+    ["nameless pillar"] = 5250,
+    ["cursed teacher high tier"] = 5250,
+    ["ghoul investigator"] = 6000,
+    ["ghoul"] = 6750,
+}
 
 -- level needed for each next prestige rank (Iron IV ... Silver I); later ranks are extrapolated
 DB.prestige = { 1500, 1750, 2000, 2250, 2500, 2850, 3200, 3550, 3900, 4300, 4700, 5100 }
@@ -4484,13 +4651,13 @@ function UI.buildPages()
     p:Section("Combat")
     p:Toggle("Auto Attack", "AutoAttack")
     p:Dropdown("Attack Method", "AttackMethod", function()
-        return { "Auto", "Tool", "Click", "Touch", "Button", "VirtualUser" }
+        return { "Auto", "Tool", "Button" }
     end, function() Attack.watch = {} end)
     p:Slider("Attack Speed", "CPS", 1, 14, 1, " cps")
-    local atest = p:Paragraph("Attack test: not run yet. Stand near mobs with your weapon in the backpack, then press the button.")
+    local atest = p:Paragraph("Mobile-safe attack: uses Tool:Activate() or a detected M1/Combat button signal. It never sends synthetic mouse/touch presses.")
     p:Button("Test attack methods", function()
         task.spawn(function()
-            atest.Set("Testing every attack method on the nearest mob (about 20 seconds)...")
+            atest.Set("Testing the available safe attack methods...")
             local r = Attack.test()
             atest.Set("Attack test: " .. r)
             Hub.note("atest", "Attack test finished.", "ok")
@@ -4906,6 +5073,9 @@ local function stage(name, fn, ...)
 end
 
 Cfg.load()
+if S.AttackMethod ~= "Auto" and S.AttackMethod ~= "Tool" and S.AttackMethod ~= "Button" then
+    S.AttackMethod = "Auto"
+end
 Spy.load()
 local builtOk = stage("ui", UI.build)
 if builtOk then
